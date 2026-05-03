@@ -51,10 +51,24 @@ fn run() -> std::io::Result<()> {
     };
     let stdout = std::io::stdout();
     let handle = stdout.lock();
-    let mut demo = Demo::new(config, handle, StdinRatifier::default())
+    // Silent StdinRatifier: the demo prints its own context-specific
+    // prompts so the StdinRatifier should not echo a competing one.
+    let ratifier = StdinRatifier {
+        prompt: String::new(),
+    };
+    let mut demo = Demo::new(config, handle, ratifier)
         .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
 
-    match demo.run_rename() {
+    let result = demo.run_rename();
+    // Drop the demo before printing summaries so the journal flushes.
+    drop(demo);
+
+    // Always preserve the tempdir so the user can inspect the journal,
+    // even on cancel / failure. (UX finding #3 from the user review.)
+    let journal_path_for_summary = journal_path.clone();
+    std::mem::forget(work_dir.guard);
+
+    match result {
         Ok(summary) => {
             println!();
             println!("┌─ summary ─");
@@ -62,13 +76,14 @@ fn run() -> std::io::Result<()> {
             println!("│ reversed:     {}", summary.reversed);
             println!("│ journal:      {}", summary.journal_path.display());
             println!("└──");
-            // Keep tempdir around so the user can inspect the journal.
-            std::mem::forget(work_dir.guard);
             Ok(())
         }
         Err(pneuma_demo::DemoError::Cancelled) => {
-            eprintln!();
-            eprintln!("demo: user cancelled.");
+            println!();
+            println!("┌─ summary ─");
+            println!("│ status:  cancelled");
+            println!("│ journal: {}", journal_path_for_summary.display());
+            println!("└──");
             Ok(())
         }
         Err(e) => Err(std::io::Error::other(format!("{e}"))),

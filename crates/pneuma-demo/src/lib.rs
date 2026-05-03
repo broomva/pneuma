@@ -159,24 +159,59 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
         let frame = self.renderer.render_ready(&ready);
         self.print_frame(&frame)?;
 
-        // 6. First approval read: commit or cancel.
-        let decision = self.ratifier.read_decision();
-        let committed = match decision {
-            ApprovalDecision::Commit | ApprovalDecision::Approve => match ready.commit() {
-                Ok(c) => c,
-                Err((_, err)) => {
-                    let frame = self.renderer.render_contract_error(&err);
-                    self.print_frame(&frame)?;
-                    return Err(err.into());
+        // 6. Pre-commit prompt loop. Only Commit/Approve and
+        //    Cancel/Reject are valid here; everything else gets a
+        //    friendly re-prompt. This addresses UX findings #1, #2, #4
+        //    from the user-perspective review.
+        let committed = loop {
+            self.print_pre_commit_prompt()?;
+            match self.ratifier.read_decision() {
+                ApprovalDecision::Commit | ApprovalDecision::Approve => match ready.commit() {
+                    Ok(c) => break c,
+                    Err((_returned_ready, err)) => {
+                        // commit() consumed `ready`. The returned ready
+                        // is shadowed here because we surface the error
+                        // and return — no retry path for a contract
+                        // violation at commit time.
+                        let frame = self.renderer.render_contract_error(&err);
+                        self.print_frame(&frame)?;
+                        return Err(err.into());
+                    }
+                },
+                ApprovalDecision::Cancel | ApprovalDecision::Reject => {
+                    self.journal_cancel(ready.id, "user cancelled at ready")?;
+                    self.print_info("CANCELLED", "directive discarded; file unchanged.")?;
+                    return Err(DemoError::Cancelled);
                 }
-            },
-            ApprovalDecision::Cancel | ApprovalDecision::Reject => {
-                self.journal_cancel(ready.id, "user cancelled at ready")?;
-                return Err(DemoError::Cancelled);
-            }
-            other => {
-                self.journal_cancel(ready.id, &format!("unexpected decision: {other:?}"))?;
-                return Err(DemoError::Cancelled);
+                ApprovalDecision::Undo => {
+                    self.print_info(
+                        "NOTE",
+                        "nothing to undo yet — directive hasn't committed. Press Enter or q.",
+                    )?;
+                }
+                ApprovalDecision::Engage => {
+                    self.print_info("NOTE", "engage gesture is for compose-time; ignored here.")?;
+                }
+                ApprovalDecision::Clarify(_) => {
+                    self.print_info(
+                        "NOTE",
+                        "clarification is a v0.3 feature; press Enter to commit, q to cancel.",
+                    )?;
+                }
+                ApprovalDecision::Continue => {
+                    self.print_info(
+                        "NOTE",
+                        "unrecognized input; press Enter to commit, q to cancel.",
+                    )?;
+                }
+                // ApprovalDecision is #[non_exhaustive]; future variants
+                // route here as a no-op re-prompt.
+                _ => {
+                    self.print_info(
+                        "NOTE",
+                        "unsupported decision; press Enter to commit, q to cancel.",
+                    )?;
+                }
             }
         };
 
@@ -221,9 +256,38 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
             .append(&JournalRecord::executed(committed.id, outcome.clone()))?;
         self.journal.flush()?;
 
-        // 11. Second approval read: undo or done.
-        let post_decision = self.ratifier.read_decision();
-        let reversed = matches!(post_decision, ApprovalDecision::Undo);
+        // 11. Post-execute prompt loop. Only Undo runs the reversal;
+        //     anything else exits cleanly. (UX finding #2: distinct
+        //     prompt for the post-execute context.)
+        //
+        //     `clippy::match_same_arms` is allowed because the
+        //     "exit-clean" arms (Cancel/Reject/Commit/Approve) and the
+        //     non-exhaustive `_` fallthrough are conceptually distinct
+        //     even though all map to `break false` in v0.2.
+        #[allow(clippy::match_same_arms)]
+        let reversed = loop {
+            self.print_post_execute_prompt()?;
+            match self.ratifier.read_decision() {
+                ApprovalDecision::Undo => break true,
+                ApprovalDecision::Cancel
+                | ApprovalDecision::Reject
+                | ApprovalDecision::Commit
+                | ApprovalDecision::Approve => break false,
+                ApprovalDecision::Continue => {
+                    self.print_info(
+                        "NOTE",
+                        "unrecognized input; press u to undo, Enter to keep.",
+                    )?;
+                }
+                ApprovalDecision::Engage | ApprovalDecision::Clarify(_) => {
+                    self.print_info("NOTE", "no-op here; press u to undo, Enter to keep.")?;
+                }
+                // ApprovalDecision is #[non_exhaustive]; future variants
+                // exit cleanly without undoing.
+                _ => break false,
+            }
+        };
+
         if reversed {
             LocalPraxis.reverse(&praxis_call, &outcome)?;
             self.journal.append(&JournalRecord::reversed(
@@ -243,6 +307,25 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
             reversed,
             journal_path: self.config.journal_path.to_path_buf(),
         })
+    }
+
+    fn print_pre_commit_prompt(&mut self) -> Result<(), DemoError> {
+        self.print_info(
+            "RATIFY",
+            "[Enter] commit and execute    [q / Esc] cancel and discard",
+        )
+    }
+
+    fn print_post_execute_prompt(&mut self) -> Result<(), DemoError> {
+        self.print_info(
+            "POST-EXECUTE",
+            "[u] undo the action    [Enter / q] keep and exit",
+        )
+    }
+
+    fn print_info(&mut self, label: &str, body: &str) -> Result<(), DemoError> {
+        let frame = self.renderer.render_info(label, body);
+        self.print_frame(&frame)
     }
 
     fn find_rename_act() -> Act {
