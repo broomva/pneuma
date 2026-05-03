@@ -38,6 +38,7 @@ fn run_with_decisions(
         new_name: "new.txt",
         journal_path: &journal_path,
         hud_width: 60,
+        utterance: None,
     };
     let mut out = Vec::<u8>::new();
     let result = {
