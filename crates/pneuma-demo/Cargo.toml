@@ -25,6 +25,7 @@ pneuma-lago-bridge = { workspace = true }
 pneuma-hud = { workspace = true }
 pneuma-ratify = { workspace = true }
 sensorium-core = { workspace = true }
+sensorium-context = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

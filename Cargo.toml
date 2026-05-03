@@ -39,6 +39,7 @@ tempfile = "3.10"
 # --- Substrate dependency (sibling subsystem). Path-only for now;
 #     version-pinned once sensorium-core publishes to crates.io. ---
 sensorium-core = { path = "../sensorium/crates/sensorium-core", version = "0.2.0" }
+sensorium-context = { path = "../sensorium/crates/sensorium-context", version = "0.2.0" }
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive", "rc"] }
