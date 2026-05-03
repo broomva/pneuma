@@ -126,7 +126,10 @@ impl FileRef {
     /// Construct from a path.
     #[must_use]
     pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self { path: path.into(), mime: None }
+        Self {
+            path: path.into(),
+            mime: None,
+        }
     }
 
     /// Attach a MIME type.
@@ -158,7 +161,11 @@ impl SymbolRef {
                 field: "SymbolRef.qualified_name",
             });
         }
-        Ok(Self { file, qualified_name: qn, kind: None })
+        Ok(Self {
+            file,
+            qualified_name: qn,
+            kind: None,
+        })
     }
 
     /// Attach a kind.
@@ -205,9 +212,14 @@ impl AnaphorRef {
     pub fn new(surface: impl Into<String>) -> Result<Self> {
         let s = surface.into().trim().to_owned();
         if s.is_empty() {
-            return Err(ContractError::EmptyIdentifier { field: "AnaphorRef.surface" });
+            return Err(ContractError::EmptyIdentifier {
+                field: "AnaphorRef.surface",
+            });
         }
-        Ok(Self { surface: s, hint: None })
+        Ok(Self {
+            surface: s,
+            hint: None,
+        })
     }
 
     /// Attach a disambiguator hint.

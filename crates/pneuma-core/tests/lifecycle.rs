@@ -8,13 +8,13 @@
 //! - Proposed → Committed (ratify) / Composing (amend) / cancelled.
 
 use chrono::Utc;
+use pneuma_core::act::ResolvedSlotValue;
 use pneuma_core::{
     Act, ActId, ActPrimitive, Arity, BindingKind, BlastRadius, Confidence, ConfidenceProducer,
     ConfidenceScore, ContextRef, ContextSnapshotId, Directive, DirectiveState, ExecutorHint,
     FileRef, PolicyEnvelope, Provenance, ReferentType, ReferentValue, ResolvedAct, ResolvedSlot,
     Reversibility, SlotKind, SlotSignature, SpeechAct,
 };
-use pneuma_core::act::ResolvedSlotValue;
 
 /// Construct a tiny `file.read` act for tests — `file: File` required,
 /// reversible (read has no side effects).
@@ -23,8 +23,12 @@ fn read_act() -> Act {
         id: ActId::new("file.read").unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("file", SlotKind::Referent(ReferentType::File), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "file",
+                SlotKind::Referent(ReferentType::File),
+                Arity::Required,
+            )
+            .unwrap(),
         ],
         reversibility: Reversibility::Free,
         blast_radius: BlastRadius::Local,
@@ -40,8 +44,12 @@ fn delete_act() -> Act {
         id: ActId::new("file.delete").unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("file", SlotKind::Referent(ReferentType::File), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "file",
+                SlotKind::Referent(ReferentType::File),
+                Arity::Required,
+            )
+            .unwrap(),
         ],
         reversibility: Reversibility::Irreversible,
         blast_radius: BlastRadius::Project,
@@ -85,7 +93,9 @@ fn composing_to_ready_to_committed_no_ratify() {
 
     let confidence =
         Confidence::from_slots(vec![("file".to_owned(), calibrated_score(0.9))]).unwrap();
-    let ready = composing.try_finalize(fresh_context(), policy, confidence).unwrap();
+    let ready = composing
+        .try_finalize(fresh_context(), policy, confidence)
+        .unwrap();
 
     assert_eq!(ready.state, DirectiveState::Ready);
 
@@ -108,11 +118,15 @@ fn composing_to_ready_to_proposed_to_committed_ratify() {
 
     let confidence =
         Confidence::from_slots(vec![("file".to_owned(), calibrated_score(0.95))]).unwrap();
-    let ready = composing.try_finalize(fresh_context(), policy, confidence).unwrap();
+    let ready = composing
+        .try_finalize(fresh_context(), policy, confidence)
+        .unwrap();
     assert_eq!(ready.state, DirectiveState::Ready);
 
     // Direct commit must error (Guarantee 4: ratify required).
-    let (ready_back, err) = ready.commit().expect_err("commit must reject when ratify required");
+    let (ready_back, err) = ready
+        .commit()
+        .expect_err("commit must reject when ratify required");
     assert!(matches!(err, pneuma_core::ContractError::RatifyRequired));
 
     // Use propose() instead.
@@ -134,7 +148,9 @@ fn proposed_reject_for_amendment_returns_to_composing() {
 
     let confidence =
         Confidence::from_slots(vec![("file".to_owned(), calibrated_score(0.95))]).unwrap();
-    let ready = composing.try_finalize(fresh_context(), policy, confidence).unwrap();
+    let ready = composing
+        .try_finalize(fresh_context(), policy, confidence)
+        .unwrap();
     let proposed = ready.propose();
     let amended = proposed.reject_for_amendment();
 

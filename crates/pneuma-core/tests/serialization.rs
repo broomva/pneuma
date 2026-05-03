@@ -7,17 +7,17 @@
 //! - Round-trip through serde_json for all the load-bearing types.
 
 use chrono::Utc;
+use pneuma_core::CostClass;
+use pneuma_core::act::ResolvedSlotValue;
+use pneuma_core::directive::{Committed, Composing, Ready};
 use pneuma_core::{
     Act, ActId, ActPrimitive, AgentResponse, Arity, BindingKind, BlastRadius, Confidence,
     ConfidenceProducer, ConfidenceScore, ContextRef, ContextSnapshotId, Directive, DirectiveError,
     DirectiveId, DirectiveResult, ExecutorHint, ExecutorKind, FileRef, Modifier, PlannedStep,
-    PolicyEnvelope, ProgressUpdate, ProposalKind, Provenance, ReferentType, ReferentValue,
-    RedactionRule, ResolvedAct, ResolvedSlot, Reversibility, SelectionRef, SlotKind, SlotSignature,
+    PolicyEnvelope, ProgressUpdate, ProposalKind, Provenance, RedactionRule, ReferentType,
+    ReferentValue, ResolvedAct, ResolvedSlot, Reversibility, SelectionRef, SlotKind, SlotSignature,
     SpeechAct, StepStatus, SymbolRef, Tagged, TextSpan, TimeWindowSpec, TokenRef, WindowId,
 };
-use pneuma_core::act::ResolvedSlotValue;
-use pneuma_core::CostClass;
-use pneuma_core::directive::{Composing, Committed, Ready};
 
 #[test]
 fn act_id_round_trips() {
@@ -45,9 +45,7 @@ fn referent_value_round_trips() {
             FileRef::new("/code.rs"),
             TextSpan::new(0, 100).unwrap(),
         )),
-        ReferentValue::Symbol(
-            SymbolRef::new(FileRef::new("/code.rs"), "module::func").unwrap(),
-        ),
+        ReferentValue::Symbol(SymbolRef::new(FileRef::new("/code.rs"), "module::func").unwrap()),
     ];
     for v in cases {
         let json = serde_json::to_string(&v).unwrap();
@@ -84,8 +82,14 @@ fn modifier_round_trips() {
 #[test]
 fn confidence_round_trips() {
     let conf = Confidence::from_slots(vec![
-        ("a".to_owned(), ConfidenceScore::new(0.9, true, ConfidenceProducer::Deterministic).unwrap()),
-        ("b".to_owned(), ConfidenceScore::new(0.7, false, ConfidenceProducer::LlmLogprob).unwrap()),
+        (
+            "a".to_owned(),
+            ConfidenceScore::new(0.9, true, ConfidenceProducer::Deterministic).unwrap(),
+        ),
+        (
+            "b".to_owned(),
+            ConfidenceScore::new(0.7, false, ConfidenceProducer::LlmLogprob).unwrap(),
+        ),
     ])
     .unwrap();
     let json = serde_json::to_string(&conf).unwrap();
@@ -114,8 +118,12 @@ fn act_round_trips() {
         id: ActId::new("file.rename").unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("target", SlotKind::Referent(ReferentType::File), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "target",
+                SlotKind::Referent(ReferentType::File),
+                Arity::Required,
+            )
+            .unwrap(),
             SlotSignature::new("new_name", SlotKind::String, Arity::Required).unwrap(),
         ],
         reversibility: Reversibility::Costly,
@@ -135,8 +143,12 @@ fn directive_composing_round_trips() {
         id: ActId::new("file.read").unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("target", SlotKind::Referent(ReferentType::File), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "target",
+                SlotKind::Referent(ReferentType::File),
+                Arity::Required,
+            )
+            .unwrap(),
         ],
         reversibility: Reversibility::Free,
         blast_radius: BlastRadius::Local,
@@ -163,8 +175,12 @@ fn directive_committed_round_trips() {
         id: ActId::new("file.read").unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("target", SlotKind::Referent(ReferentType::File), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "target",
+                SlotKind::Referent(ReferentType::File),
+                Arity::Required,
+            )
+            .unwrap(),
         ],
         reversibility: Reversibility::Free,
         blast_radius: BlastRadius::Local,
@@ -187,7 +203,11 @@ fn directive_committed_round_trips() {
     .unwrap();
     let committed: Directive<Committed> = Directive::new(SpeechAct::Directive, resolved)
         .bind_slot(bound)
-        .try_finalize(ContextRef::new(ContextSnapshotId::new(), Utc::now()), policy, confidence)
+        .try_finalize(
+            ContextRef::new(ContextSnapshotId::new(), Utc::now()),
+            policy,
+            confidence,
+        )
         .unwrap()
         .commit()
         .unwrap();

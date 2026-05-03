@@ -198,7 +198,10 @@ impl PolicyEnvelope {
         };
 
         let requires_ratify = matches!(reversibility, Reversibility::Irreversible)
-            || matches!(blast_radius, BlastRadius::User | BlastRadius::System | BlastRadius::External);
+            || matches!(
+                blast_radius,
+                BlastRadius::User | BlastRadius::System | BlastRadius::External
+            );
 
         Self {
             reversibility,

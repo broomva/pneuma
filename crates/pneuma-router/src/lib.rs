@@ -252,7 +252,13 @@ pub fn dispatch_at(
         ExecutorKind::Spaces => Dispatch::Spaces(build_spaces_message(directive)),
         ExecutorKind::Custom => Dispatch::Custom(CustomPayload {
             act_id: act.id.clone(),
-            kind: act.id.as_str().split('.').next().unwrap_or("custom").to_owned(),
+            kind: act
+                .id
+                .as_str()
+                .split('.')
+                .next()
+                .unwrap_or("custom")
+                .to_owned(),
             slots,
         }),
         // ExecutorKind is #[non_exhaustive] in pneuma-core. Future-added
@@ -329,7 +335,11 @@ fn build_spaces_message(directive: &Directive<Committed>) -> SpacesMessage {
             _ => None,
         });
 
-    SpacesMessage { act_id: act.id.clone(), channel, body }
+    SpacesMessage {
+        act_id: act.id.clone(),
+        channel,
+        body,
+    }
 }
 
 // --- Drift detection (caller-side) -----------------------------------------

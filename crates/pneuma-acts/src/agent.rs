@@ -32,11 +32,7 @@ pub fn acts() -> Vec<Act> {
         // agent.explain — read-only, no reverse.
         act(
             "agent.explain",
-            vec![req_referent(
-                "target",
-                ReferentType::Any,
-                "What to explain",
-            )],
+            vec![req_referent("target", ReferentType::Any, "What to explain")],
             Reversibility::Free,
             BlastRadius::Local,
             ExecutorHint::Arcan,
@@ -46,11 +42,7 @@ pub fn acts() -> Vec<Act> {
         // agent.review — read-only.
         act(
             "agent.review",
-            vec![req_referent(
-                "target",
-                ReferentType::Any,
-                "What to review",
-            )],
+            vec![req_referent("target", ReferentType::Any, "What to review")],
             Reversibility::Free,
             BlastRadius::Local,
             ExecutorHint::Arcan,

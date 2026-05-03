@@ -299,7 +299,9 @@ impl Directive<Composing> {
         if let Some(deadline) = policy.valid_until
             && Utc::now() > deadline
         {
-            let err = ContractError::Expired { expired_at: deadline };
+            let err = ContractError::Expired {
+                expired_at: deadline,
+            };
             return Err((self, err));
         }
 
@@ -472,18 +474,24 @@ impl Directive<Committed> {
     /// Borrow the policy envelope (always present for `Committed`).
     #[must_use]
     pub fn policy(&self) -> &PolicyEnvelope {
-        self.policy.as_ref().expect("Committed directive must have policy")
+        self.policy
+            .as_ref()
+            .expect("Committed directive must have policy")
     }
 
     /// Borrow the confidence (always present for `Committed`).
     #[must_use]
     pub fn confidence(&self) -> &Confidence {
-        self.confidence.as_ref().expect("Committed directive must have confidence")
+        self.confidence
+            .as_ref()
+            .expect("Committed directive must have confidence")
     }
 
     /// Borrow the context ref (always present for `Committed`).
     #[must_use]
     pub fn context(&self) -> &ContextRef {
-        self.context.as_ref().expect("Committed directive must have context")
+        self.context
+            .as_ref()
+            .expect("Committed directive must have context")
     }
 }

@@ -18,7 +18,8 @@ use pneuma_core::{BlastRadius, PolicyEnvelope, Reversibility};
 #[test]
 fn intrinsic_threshold_monotone_in_reversibility() {
     let free = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::Local).min_confidence;
-    let costly = PolicyEnvelope::intrinsic(Reversibility::Costly, BlastRadius::Local).min_confidence;
+    let costly =
+        PolicyEnvelope::intrinsic(Reversibility::Costly, BlastRadius::Local).min_confidence;
     let irrev =
         PolicyEnvelope::intrinsic(Reversibility::Irreversible, BlastRadius::Local).min_confidence;
     assert!(free < costly, "Costly tighter than Free");
@@ -28,10 +29,12 @@ fn intrinsic_threshold_monotone_in_reversibility() {
 #[test]
 fn intrinsic_threshold_monotone_in_blast() {
     let local = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::Local).min_confidence;
-    let project = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::Project).min_confidence;
+    let project =
+        PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::Project).min_confidence;
     let user = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::User).min_confidence;
     let system = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::System).min_confidence;
-    let external = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::External).min_confidence;
+    let external =
+        PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::External).min_confidence;
     assert!(local < project);
     assert!(project < user);
     assert!(user < system);
@@ -96,7 +99,10 @@ fn tighten_by_carefulness_raises_threshold() {
     let mut p = PolicyEnvelope::intrinsic(Reversibility::Free, BlastRadius::Local);
     let baseline = p.min_confidence; // 0.55
     p.tighten_by_carefulness(0.5).unwrap();
-    assert!(p.min_confidence > baseline, "carefulness must raise threshold");
+    assert!(
+        p.min_confidence > baseline,
+        "carefulness must raise threshold"
+    );
     assert!(p.tightened_by_user);
 }
 
@@ -137,7 +143,10 @@ fn urgency_shortens_ratify_window_only() {
     let baseline_window = p.ratify_window_ms.unwrap(); // 800ms intrinsic
     p.loosen_by_urgency(1.0).unwrap();
     let new_window = p.ratify_window_ms.unwrap();
-    assert!(new_window < baseline_window, "urgency 1.0 must shorten dwell");
+    assert!(
+        new_window < baseline_window,
+        "urgency 1.0 must shorten dwell"
+    );
     assert!(new_window >= 200, "dwell clamps to 200ms minimum");
 }
 

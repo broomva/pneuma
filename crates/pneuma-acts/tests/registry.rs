@@ -27,14 +27,20 @@ fn seed_registry_has_thirty_acts() {
 fn all_act_ids_are_unique() {
     let acts = registry();
     let ids: HashSet<_> = acts.iter().map(|a| a.id.as_str().to_owned()).collect();
-    assert_eq!(ids.len(), acts.len(), "ActIds must be unique across the registry");
+    assert_eq!(
+        ids.len(),
+        acts.len(),
+        "ActIds must be unique across the registry"
+    );
 }
 
 #[test]
 fn domain_counts_match_spec() {
     let acts = registry();
     let count = |prefix: &str| -> usize {
-        acts.iter().filter(|a| a.id.as_str().starts_with(prefix)).count()
+        acts.iter()
+            .filter(|a| a.id.as_str().starts_with(prefix))
+            .count()
     };
     assert_eq!(count("file."), 8, "file domain has 8 acts");
     assert_eq!(count("workspace."), 6, "workspace domain has 6 acts");

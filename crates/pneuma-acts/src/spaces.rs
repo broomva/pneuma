@@ -33,10 +33,7 @@ pub fn acts() -> Vec<Act> {
         act(
             "spaces.message_react",
             vec![
-                req_string(
-                    "message_id",
-                    "Message identifier (Spaces protocol-defined)",
-                ),
+                req_string("message_id", "Message identifier (Spaces protocol-defined)"),
                 req_string("emoji", "Reaction emoji"),
             ],
             Reversibility::Costly,

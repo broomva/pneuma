@@ -58,8 +58,16 @@ pub struct TokenRef {
 impl TokenRef {
     /// Construct a token reference.
     #[must_use]
-    pub fn new(id: impl Into<String>, modality: impl Into<String>, observed_at: DateTime<Utc>) -> Self {
-        Self { id: id.into(), modality: modality.into(), observed_at }
+    pub fn new(
+        id: impl Into<String>,
+        modality: impl Into<String>,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            modality: modality.into(),
+            observed_at,
+        }
     }
 }
 
@@ -179,7 +187,10 @@ impl ContextRef {
     /// Construct a reference to a freshly-captured snapshot.
     #[must_use]
     pub fn new(snapshot_id: ContextSnapshotId, captured_at: DateTime<Utc>) -> Self {
-        Self { snapshot_id, captured_at }
+        Self {
+            snapshot_id,
+            captured_at,
+        }
     }
 }
 
@@ -202,12 +213,12 @@ pub struct Provenance {
 impl Provenance {
     /// Construct a provenance record.
     #[must_use]
-    pub fn new(
-        tokens: Vec<TokenRef>,
-        binding: BindingKind,
-        observed_at: DateTime<Utc>,
-    ) -> Self {
-        Self { tokens, binding, observed_at }
+    pub fn new(tokens: Vec<TokenRef>, binding: BindingKind, observed_at: DateTime<Utc>) -> Self {
+        Self {
+            tokens,
+            binding,
+            observed_at,
+        }
     }
 
     /// A "default value" provenance — no tokens, `BindingKind::Default`,
@@ -262,12 +273,18 @@ impl<T> Tagged<T> {
     /// re-observing it. The provenance keeps pointing at the original
     /// tokens — the refinement does not add evidence.
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Tagged<U> {
-        Tagged { value: f(self.value), provenance: self.provenance }
+        Tagged {
+            value: f(self.value),
+            provenance: self.provenance,
+        }
     }
 
     /// Borrow the value with provenance attached.
     #[must_use]
     pub fn as_ref(&self) -> Tagged<&T> {
-        Tagged { value: &self.value, provenance: self.provenance.clone() }
+        Tagged {
+            value: &self.value,
+            provenance: self.provenance.clone(),
+        }
     }
 }

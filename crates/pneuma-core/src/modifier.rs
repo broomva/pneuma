@@ -54,7 +54,10 @@ impl TimeWindowSpec {
             let start_ms = start.timestamp_millis().max(0) as u64;
             #[allow(clippy::cast_sign_loss)]
             let end_ms = end.timestamp_millis().max(0) as u64;
-            return Err(ContractError::InvalidSpan { start: start_ms, end: end_ms });
+            return Err(ContractError::InvalidSpan {
+                start: start_ms,
+                end: end_ms,
+            });
         }
         Ok(Self { start, end })
     }

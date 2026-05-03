@@ -9,21 +9,25 @@
 //!    committed against.
 
 use chrono::Utc;
+use pneuma_core::act::ResolvedSlotValue;
 use pneuma_core::{
     Act, ActId, ActPrimitive, Arity, BindingKind, BlastRadius, Confidence, ConfidenceProducer,
     ConfidenceScore, ContextRef, ContextSnapshotId, ContractError, Directive, ExecutorHint,
     FileRef, PolicyEnvelope, Provenance, ReferentType, ReferentValue, ResolvedAct, ResolvedSlot,
     Reversibility, SlotKind, SlotSignature, SpeechAct, WindowId,
 };
-use pneuma_core::act::ResolvedSlotValue;
 
 fn act_with_required_file_slot(id: &str, rev: Reversibility, blast: BlastRadius) -> Act {
     Act {
         id: ActId::new(id).unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("target", SlotKind::Referent(ReferentType::File), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "target",
+                SlotKind::Referent(ReferentType::File),
+                Arity::Required,
+            )
+            .unwrap(),
         ],
         reversibility: rev,
         blast_radius: blast,
@@ -76,12 +80,7 @@ fn optional_slot_unbound_does_not_block() {
                 Arity::Required,
             )
             .unwrap(),
-            SlotSignature::new(
-                "mode",
-                SlotKind::String,
-                Arity::Optional,
-            )
-            .unwrap(),
+            SlotSignature::new("mode", SlotKind::String, Arity::Optional).unwrap(),
         ],
         reversibility: Reversibility::Free,
         blast_radius: BlastRadius::Local,
@@ -143,8 +142,12 @@ fn any_referent_type_accepts_anything() {
         id: ActId::new("debug.show").unwrap(),
         primitive: ActPrimitive::Custom,
         slots: vec![
-            SlotSignature::new("target", SlotKind::Referent(ReferentType::Any), Arity::Required)
-                .unwrap(),
+            SlotSignature::new(
+                "target",
+                SlotKind::Referent(ReferentType::Any),
+                Arity::Required,
+            )
+            .unwrap(),
         ],
         reversibility: Reversibility::Free,
         blast_radius: BlastRadius::Local,
@@ -188,7 +191,10 @@ fn below_threshold_confidence_blocks_finalization() {
         .bind_slot(bound)
         .try_finalize(fresh_context(), policy, confidence)
         .expect_err("low confidence must reject");
-    assert!(matches!(err, ContractError::ConfidenceBelowThreshold { .. }));
+    assert!(matches!(
+        err,
+        ContractError::ConfidenceBelowThreshold { .. }
+    ));
 }
 
 #[test]
@@ -215,7 +221,11 @@ fn uncalibrated_confidence_pays_penalty() {
         .bind_slot(bound)
         .try_finalize(fresh_context(), policy, confidence);
     let (_, err) = result.expect_err("uncalibrated 0.6 must not clear effective 0.6875");
-    if let ContractError::ConfidenceBelowThreshold { effective_threshold, .. } = err {
+    if let ContractError::ConfidenceBelowThreshold {
+        effective_threshold,
+        ..
+    } = err
+    {
         assert!(
             (effective_threshold - 0.6875).abs() < 1e-3,
             "effective threshold = nominal / (1 - 0.20)"
@@ -269,11 +279,7 @@ fn user_blast_requires_ratify_even_when_reversible() {
 
 #[test]
 fn local_reversible_does_not_require_ratify() {
-    let act = act_with_required_file_slot(
-        "cursor.move",
-        Reversibility::Free,
-        BlastRadius::Local,
-    );
+    let act = act_with_required_file_slot("cursor.move", Reversibility::Free, BlastRadius::Local);
     let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
     assert!(!policy.requires_ratify);
 }
@@ -282,11 +288,7 @@ fn local_reversible_does_not_require_ratify() {
 
 #[test]
 fn committed_directive_carries_snapshot() {
-    let act = act_with_required_file_slot(
-        "file.read",
-        Reversibility::Free,
-        BlastRadius::Local,
-    );
+    let act = act_with_required_file_slot("file.read", Reversibility::Free, BlastRadius::Local);
     let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
     let resolved = ResolvedAct::empty(act);
     let bound = ResolvedSlot::new(
@@ -317,11 +319,7 @@ fn committed_directive_carries_snapshot() {
 
 #[test]
 fn expired_policy_blocks_finalization() {
-    let act = act_with_required_file_slot(
-        "file.read",
-        Reversibility::Free,
-        BlastRadius::Local,
-    );
+    let act = act_with_required_file_slot("file.read", Reversibility::Free, BlastRadius::Local);
     let mut policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
     // valid_until in the past.
     policy.valid_until = Some(Utc::now() - chrono::Duration::seconds(60));

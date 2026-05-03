@@ -131,16 +131,19 @@ pub struct SlotSignature {
 
 impl SlotSignature {
     /// Construct.
-    pub fn new(
-        name: impl Into<String>,
-        kind: SlotKind,
-        arity: Arity,
-    ) -> Result<Self> {
+    pub fn new(name: impl Into<String>, kind: SlotKind, arity: Arity) -> Result<Self> {
         let n = name.into().trim().to_owned();
         if n.is_empty() {
-            return Err(ContractError::EmptyIdentifier { field: "SlotSignature.name" });
+            return Err(ContractError::EmptyIdentifier {
+                field: "SlotSignature.name",
+            });
         }
-        Ok(Self { name: n, kind, arity, description: None })
+        Ok(Self {
+            name: n,
+            kind,
+            arity,
+            description: None,
+        })
     }
 
     /// Attach a description.
@@ -276,9 +279,15 @@ impl ResolvedSlot {
     ) -> Result<Self> {
         let n = name.into().trim().to_owned();
         if n.is_empty() {
-            return Err(ContractError::EmptyIdentifier { field: "ResolvedSlot.name" });
+            return Err(ContractError::EmptyIdentifier {
+                field: "ResolvedSlot.name",
+            });
         }
-        Ok(Self { name: n, value, provenance })
+        Ok(Self {
+            name: n,
+            value,
+            provenance,
+        })
     }
 }
 
@@ -300,7 +309,10 @@ impl ResolvedAct {
     /// Construct an empty resolution (no slots bound yet).
     #[must_use]
     pub fn empty(act: Act) -> Self {
-        Self { act, bindings: Vec::new() }
+        Self {
+            act,
+            bindings: Vec::new(),
+        }
     }
 
     /// Bind a slot. Replaces any existing binding for the same slot
@@ -322,8 +334,9 @@ impl ResolvedAct {
 
     /// Iterate the act's *required* slots that lack a binding.
     pub fn unbound_required(&self) -> impl Iterator<Item = &SlotSignature> {
-        self.act.slots.iter().filter(|sig| {
-            sig.arity == Arity::Required && self.binding(&sig.name).is_none()
-        })
+        self.act
+            .slots
+            .iter()
+            .filter(|sig| sig.arity == Arity::Required && self.binding(&sig.name).is_none())
     }
 }

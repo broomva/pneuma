@@ -87,7 +87,11 @@ impl ConfidenceScore {
                 value,
             });
         }
-        Ok(Self { value, is_calibrated, producer })
+        Ok(Self {
+            value,
+            is_calibrated,
+            producer,
+        })
     }
 
     /// Apply the calibration penalty: if uncalibrated, drop the score
@@ -144,7 +148,11 @@ impl Confidence {
         let all_calibrated = per_slot.iter().all(|(_, s)| s.is_calibrated);
 
         Ok(Self {
-            aggregate: ConfidenceScore::new(weakest, all_calibrated, ConfidenceProducer::Aggregate)?,
+            aggregate: ConfidenceScore::new(
+                weakest,
+                all_calibrated,
+                ConfidenceProducer::Aggregate,
+            )?,
             per_slot,
         })
     }
@@ -153,7 +161,10 @@ impl Confidence {
     /// producer wants to override the default minimum-join.
     #[must_use]
     pub fn from_aggregate(aggregate: ConfidenceScore) -> Self {
-        Self { per_slot: Vec::new(), aggregate }
+        Self {
+            per_slot: Vec::new(),
+            aggregate,
+        }
     }
 
     /// The weakest per-slot score, if any. Returns the aggregate's

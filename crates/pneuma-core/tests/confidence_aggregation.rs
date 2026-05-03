@@ -6,8 +6,8 @@
 //! - Aggregate is calibrated only if every per-slot score is calibrated.
 //! - `effective_value()` applies the 20% penalty to uncalibrated scores.
 
-use pneuma_core::{Confidence, ConfidenceProducer, ConfidenceScore};
 use pneuma_core::confidence::UNCALIBRATED_PENALTY;
+use pneuma_core::{Confidence, ConfidenceProducer, ConfidenceScore};
 
 fn cal(v: f32) -> ConfidenceScore {
     ConfidenceScore::new(v, true, ConfidenceProducer::Deterministic).unwrap()

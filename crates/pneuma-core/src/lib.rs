@@ -79,7 +79,7 @@ pub use act::{
 };
 pub use confidence::{Confidence, ConfidenceProducer, ConfidenceScore};
 pub use directive::{
-    Composing, Committed, Directive, DirectiveId, DirectiveState, Proposed, Ready, SpeechAct,
+    Committed, Composing, Directive, DirectiveId, DirectiveState, Proposed, Ready, SpeechAct,
 };
 pub use error::{ContractError, Result};
 pub use modifier::{Modifier, ModifierKind, TimeWindowSpec};

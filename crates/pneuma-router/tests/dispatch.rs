@@ -15,13 +15,13 @@
 
 use chrono::{Duration, Utc};
 use pneuma_acts::registry;
+use pneuma_core::act::ResolvedSlotValue;
 use pneuma_core::{
     Act, BindingKind, Confidence, ConfidenceProducer, ConfidenceScore, ContextRef,
     ContextSnapshotId, Directive, ExecutorHint, ExecutorKind, FileRef, PolicyEnvelope, Provenance,
     ReferentValue, ResolvedAct, ResolvedSlot, SpeechAct,
 };
-use pneuma_core::act::ResolvedSlotValue;
-use pneuma_router::{dispatch, dispatch_at, Dispatch, RefusalReason};
+use pneuma_router::{Dispatch, RefusalReason, dispatch, dispatch_at};
 use sensorium_core::{Timestamp, WorkspaceContext, WorkspaceContextBuilder};
 
 // --- Helpers ----------------------------------------------------------------
@@ -51,10 +51,7 @@ fn commit_with_file_target(
 ) -> (Directive<pneuma_core::Committed>, ContextSnapshotId) {
     let snapshot = context.snapshot();
     let snapshot_id = ContextSnapshotId::from_uuid(snapshot.id.into_inner());
-    let context_ref = ContextRef::new(
-        snapshot_id,
-        snapshot.taken_at.into_inner(),
-    );
+    let context_ref = ContextRef::new(snapshot_id, snapshot.taken_at.into_inner());
 
     let resolved = ResolvedAct::empty(act.clone());
     let mut composing = Directive::new(SpeechAct::Directive, resolved).bind_slot(
@@ -66,9 +63,7 @@ fn commit_with_file_target(
         .unwrap(),
     );
     for (name, value) in extra_slots {
-        composing = composing.bind_slot(
-            ResolvedSlot::new(name, value, det_provenance()).unwrap(),
-        );
+        composing = composing.bind_slot(ResolvedSlot::new(name, value, det_provenance()).unwrap());
     }
 
     let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
@@ -80,7 +75,9 @@ fn commit_with_file_target(
     }
     let confidence = Confidence::from_slots(slot_scores).unwrap();
 
-    let ready = composing.try_finalize(context_ref, policy, confidence).unwrap();
+    let ready = composing
+        .try_finalize(context_ref, policy, confidence)
+        .unwrap();
     let requires_ratify = ready.policy.as_ref().is_some_and(|p| p.requires_ratify);
     let committed = if requires_ratify {
         ready.propose().ratify()
@@ -95,12 +92,8 @@ fn commit_with_file_target(
 #[test]
 fn file_open_routes_to_praxis() {
     let context = WorkspaceContext::neutral(Timestamp::now());
-    let (committed, _) = commit_with_file_target(
-        &find_act("file.open"),
-        "/tmp/x.txt",
-        vec![],
-        &context,
-    );
+    let (committed, _) =
+        commit_with_file_target(&find_act("file.open"), "/tmp/x.txt", vec![], &context);
 
     match dispatch(&committed, &context) {
         Dispatch::Praxis(call) => {
@@ -292,12 +285,8 @@ fn executor_lockdown_overrides_act_hint() {
 #[test]
 fn router_is_deterministic_at_fixed_now() {
     let context = WorkspaceContext::neutral(Timestamp::now());
-    let (committed, _) = commit_with_file_target(
-        &find_act("file.open"),
-        "/tmp/x.txt",
-        vec![],
-        &context,
-    );
+    let (committed, _) =
+        commit_with_file_target(&find_act("file.open"), "/tmp/x.txt", vec![], &context);
     let now = Utc::now();
     let a = dispatch_at(&committed, &context, now);
     let b = dispatch_at(&committed, &context, now);
