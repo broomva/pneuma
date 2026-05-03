@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "crates/pneuma-core",
+    "crates/pneuma-acts",
+    "crates/pneuma-router",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/broomva/pneuma"
+homepage = "https://github.com/broomva/pneuma"
+authors = ["Carlos D. Escobar-Valbuena <carlosbvalbuena@gmail.com>"]
+readme = "README.md"
+keywords = ["agents", "intent", "directive", "language", "contract"]
+categories = ["data-structures", "development-tools"]
+
+[workspace.dependencies]
+# --- Internal crates (path + version, ready for crates.io publish) ---
+pneuma-core = { path = "crates/pneuma-core", version = "0.2.0" }
+pneuma-acts = { path = "crates/pneuma-acts", version = "0.2.0" }
+pneuma-router = { path = "crates/pneuma-router", version = "0.2.0" }
+
+# --- Substrate dependency (sibling subsystem). Path-only for now;
+#     version-pinned once sensorium-core publishes to crates.io. ---
+sensorium-core = { path = "../sensorium/crates/sensorium-core", version = "0.2.0" }
+
+# --- Serialization ---
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+serde_test = "1"
+
+# --- Identifiers (UUIDv7 so directive IDs sort by creation time) ---
+uuid = { version = "1.10", features = ["v7", "serde"] }
+
+# --- Time ---
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- Errors ---
+thiserror = "1"
+
+# --- Versioning ---
+semver = { version = "1", features = ["serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

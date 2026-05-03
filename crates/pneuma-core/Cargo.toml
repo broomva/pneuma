@@ -1,0 +1,37 @@
+[package]
+name = "pneuma-core"
+description = "The directive contract for MIL — typestate lifecycle, policy envelope, calibrated confidence, Tagged<T> provenance. The in-flight intent layer of the Life Agent OS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+semver = { workspace = true }
+
+[dev-dependencies]
+serde_test = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"

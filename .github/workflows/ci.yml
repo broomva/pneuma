@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Sibling checkout (sensorium-core path-dep)
+        uses: actions/checkout@v4
+        with:
+          repository: broomva/sensorium
+          path: ../sensorium
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sibling checkout (sensorium-core path-dep)
+        uses: actions/checkout@v4
+        with:
+          repository: broomva/sensorium
+          path: ../sensorium
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace --all-features
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sibling checkout (sensorium-core path-dep)
+        uses: actions/checkout@v4
+        with:
+          repository: broomva/sensorium
+          path: ../sensorium
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo check on MSRV
+        run: cargo check --workspace --all-targets
