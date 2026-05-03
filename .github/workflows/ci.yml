@@ -20,23 +20,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
-      - name: Sibling checkout (sensorium-core path-dep)
+          path: pneuma
+      - name: Checkout sibling sensorium (path-dep)
         uses: actions/checkout@v4
         with:
           repository: broomva/sensorium
-          path: ../sensorium
+          path: sensorium
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pneuma
       - name: cargo fmt --check
+        working-directory: pneuma
         run: cargo fmt --all -- --check
       - name: cargo check
+        working-directory: pneuma
         run: cargo check --workspace --all-targets
       - name: cargo clippy (-D warnings)
+        working-directory: pneuma
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
@@ -48,31 +53,22 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Sibling checkout (sensorium-core path-dep)
+        with:
+          path: pneuma
+      - name: Checkout sibling sensorium (path-dep)
         uses: actions/checkout@v4
         with:
           repository: broomva/sensorium
-          path: ../sensorium
+          path: sensorium
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pneuma
       - name: cargo test
+        working-directory: pneuma
         run: cargo test --workspace --all-features
 
-  msrv:
-    name: MSRV (1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Sibling checkout (sensorium-core path-dep)
-        uses: actions/checkout@v4
-        with:
-          repository: broomva/sensorium
-          path: ../sensorium
-      - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-      - name: cargo check on MSRV
-        run: cargo check --workspace --all-targets
+  # MSRV check disabled until we ship Cargo.lock to crates.io. See note
+  # in core/sensorium/.github/workflows/ci.yml.
