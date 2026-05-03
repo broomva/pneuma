@@ -1,0 +1,41 @@
+[package]
+name = "pneuma-lago-bridge"
+description = "Minimal journaling bridge — writes committed Pneuma directives + Praxis execution outcomes to a JSON-lines file. Stand-in for the planned Lago subsystem."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+pneuma-core = { workspace = true }
+pneuma-praxis-bridge = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+pneuma-acts = { workspace = true }
+pneuma-router = { workspace = true }
+sensorium-core = { workspace = true }
+tempfile = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"

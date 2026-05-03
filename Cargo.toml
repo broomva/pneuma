@@ -3,6 +3,8 @@ members = [
     "crates/pneuma-core",
     "crates/pneuma-acts",
     "crates/pneuma-router",
+    "crates/pneuma-praxis-bridge",
+    "crates/pneuma-lago-bridge",
 ]
 resolver = "2"
 
@@ -23,6 +25,11 @@ categories = ["data-structures", "development-tools"]
 pneuma-core = { path = "crates/pneuma-core", version = "0.2.0" }
 pneuma-acts = { path = "crates/pneuma-acts", version = "0.2.0" }
 pneuma-router = { path = "crates/pneuma-router", version = "0.2.0" }
+pneuma-praxis-bridge = { path = "crates/pneuma-praxis-bridge", version = "0.2.0" }
+pneuma-lago-bridge = { path = "crates/pneuma-lago-bridge", version = "0.2.0" }
+
+# --- Tempdir for tests ---
+tempfile = "3.10"
 
 # --- Substrate dependency (sibling subsystem). Path-only for now;
 #     version-pinned once sensorium-core publishes to crates.io. ---
