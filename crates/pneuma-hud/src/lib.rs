@@ -251,7 +251,13 @@ impl HudRenderer {
         );
         let _ = writeln!(body, "│ directive-id: {}", d.id.into_inner());
         if let Some(at) = d.committed_at {
-            let _ = writeln!(body, "│ committed-at: {}", at);
+            // Drop sub-second precision for HUD readability; the journal
+            // keeps full nanosecond fidelity.
+            let _ = writeln!(
+                body,
+                "│ committed-at: {}",
+                at.format("%Y-%m-%d %H:%M:%S UTC")
+            );
         }
         body.push_str("│ ⚡ dispatched\n");
         self.bottom(&mut body);
@@ -417,6 +423,8 @@ fn truncate_for_hud(s: &str, max: usize) -> String {
 }
 
 fn short_json(v: &serde_json::Value) -> String {
+    // 240 chars is enough for typical file.rename / file.copy results
+    // (two paths) without forcing the user to read the journal.
     let s = serde_json::to_string(v).unwrap_or_default();
-    truncate_for_hud(&s, 120)
+    truncate_for_hud(&s, 240)
 }
