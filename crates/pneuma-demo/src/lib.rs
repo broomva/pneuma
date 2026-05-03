@@ -8,6 +8,10 @@
 
 #![doc = include_str!("../README.md")]
 
+mod parser;
+
+pub use parser::{ParseError, ParsedUtterance, parse_utterance};
+
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -75,6 +79,13 @@ pub struct DemoConfig<'a> {
     pub journal_path: &'a Path,
     /// Width hint for the HUD.
     pub hud_width: usize,
+    /// Optional natural-language utterance to attach to the
+    /// directive. If `Some`, it's recorded verbatim in the
+    /// directive's `utterance` field (used by Arcan dispatch and
+    /// available to the journal). Phase 2 acts derive `new_name`
+    /// upstream via [`parse_utterance`] before constructing the
+    /// config.
+    pub utterance: Option<&'a str>,
 }
 
 // --- Demo runner -----------------------------------------------------------
@@ -152,7 +163,12 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
         let act = Self::find_rename_act();
         let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
 
-        let composing = build_rename_directive(act, self.config.source_path, self.config.new_name);
+        let composing = build_rename_directive(
+            act,
+            self.config.source_path,
+            self.config.new_name,
+            self.config.utterance,
+        );
 
         // 3. Render composing.
         let frame = self.renderer.render_composing(&composing);
@@ -393,10 +409,11 @@ fn build_rename_directive(
     act: Act,
     source_path: &Path,
     new_name: &str,
+    utterance: Option<&str>,
 ) -> Directive<pneuma_core::Composing> {
     let resolved = ResolvedAct::empty(act);
     let provenance = Provenance::new(Vec::new(), BindingKind::Deterministic, Utc::now());
-    Directive::new(SpeechAct::Directive, resolved)
+    let directive = Directive::new(SpeechAct::Directive, resolved)
         .bind_slot(
             ResolvedSlot::new(
                 "target",
@@ -412,8 +429,16 @@ fn build_rename_directive(
                 provenance,
             )
             .expect("slot is non-empty"),
-        )
-        .with_utterance(format!("rename {} to {}", source_path.display(), new_name))
+        );
+
+    // If the caller supplied an utterance (parsed from speech / text
+    // input), attach it. Otherwise synthesize a canonical-form
+    // utterance for diagnostics.
+    let utterance_text = utterance.map_or_else(
+        || format!("rename {} to {}", source_path.display(), new_name),
+        str::to_owned,
+    );
+    directive.with_utterance(utterance_text)
 }
 
 fn build_confidence() -> Confidence {

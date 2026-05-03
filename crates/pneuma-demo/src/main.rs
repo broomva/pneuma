@@ -14,7 +14,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use pneuma_demo::{Demo, DemoConfig, manual_observer_for};
+use pneuma_acts::ActRegistry;
+use pneuma_demo::{Demo, DemoConfig, manual_observer_for, parse_utterance};
 use pneuma_ratify::StdinRatifier;
 
 fn main() -> ExitCode {
@@ -34,20 +35,59 @@ fn run() -> std::io::Result<()> {
     fs::write(&source_path, "alpha")?;
     let journal_path = work_dir.path.join("demo.journal.ndjson");
 
+    // Phase 2.1: optional natural-language utterance via env var.
+    // Default phrasing matches the canonical demo when MIL_UTTERANCE
+    // is unset.
+    let utterance_env = std::env::var("MIL_UTTERANCE").ok();
+    let registry = ActRegistry::canonical();
+    let (new_name, utterance_for_directive) = match utterance_env.as_deref() {
+        Some(s) if !s.trim().is_empty() => match parse_utterance(s, &registry) {
+            Ok(parsed) if parsed.act_id.as_str() == "file.rename" => {
+                let nn = parsed
+                    .payload_slots
+                    .iter()
+                    .find(|(k, _)| k == "new_name")
+                    .map(|(_, v)| v.clone());
+                if let Some(name) = nn {
+                    (name, Some(parsed.utterance))
+                } else {
+                    eprintln!("demo: utterance parsed but no new_name extracted; using default");
+                    ("new.txt".to_owned(), Some(parsed.utterance))
+                }
+            }
+            Ok(parsed) => {
+                eprintln!(
+                    "demo: utterance resolved to act `{}` but the demo only handles file.rename in v0.2; using default new_name",
+                    parsed.act_id.as_str()
+                );
+                ("new.txt".to_owned(), Some(parsed.utterance))
+            }
+            Err(err) => {
+                eprintln!("demo: could not parse MIL_UTTERANCE ({err}); using default");
+                ("new.txt".to_owned(), Some(s.to_owned()))
+            }
+        },
+        _ => ("new.txt".to_owned(), None),
+    };
+
     println!("┌─ MIL Tier 2 demo ───────────────────────────────────────────────────────");
     println!("│ workdir:     {}", work_dir.path.display());
     println!("│ source:      {}", source_path.display());
     println!("│ journal:     {}", journal_path.display());
-    println!("│ proposed →   rename old.txt to new.txt");
+    if let Some(u) = utterance_for_directive.as_deref() {
+        println!("│ utterance:   {u}");
+    }
+    println!("│ proposed →   rename old.txt to {new_name}");
     println!("└──────────────────────────────────────────────────────────────────────────");
     println!();
     let _ = std::io::stdout().flush();
 
     let config = DemoConfig {
         source_path: &source_path,
-        new_name: "new.txt",
+        new_name: &new_name,
         journal_path: &journal_path,
         hud_width: 80,
+        utterance: utterance_for_directive.as_deref(),
     };
     let stdout = std::io::stdout();
     let handle = stdout.lock();
