@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use pneuma_demo::{Demo, DemoConfig};
+use pneuma_demo::{Demo, DemoConfig, manual_observer_for};
 use pneuma_ratify::StdinRatifier;
 
 fn main() -> ExitCode {
@@ -56,7 +56,11 @@ fn run() -> std::io::Result<()> {
     let ratifier = StdinRatifier {
         prompt: String::new(),
     };
-    let mut demo = Demo::new(config, handle, ratifier)
+    // Build a ManualObserver pre-populated with the focused file.
+    // The real producer model: a sensorium-context observer feeds
+    // the substrate; pneuma-router queries when it needs context.
+    let observer = Box::new(manual_observer_for(&source_path));
+    let mut demo = Demo::new(config, handle, ratifier, observer)
         .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
 
     let result = demo.run_rename();

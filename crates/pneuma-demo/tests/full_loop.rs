@@ -15,7 +15,7 @@
 
 use std::fs;
 
-use pneuma_demo::{Demo, DemoConfig, DemoError};
+use pneuma_demo::{Demo, DemoConfig, DemoError, manual_observer_for};
 use pneuma_lago_bridge::{JournalReader, JournalRecord};
 use pneuma_ratify::{ApprovalDecision, MockRatifier};
 
@@ -41,8 +41,14 @@ fn run_with_decisions(
     };
     let mut out = Vec::<u8>::new();
     let result = {
-        let mut demo =
-            Demo::new(config, &mut out, MockRatifier::from_decisions(decisions)).unwrap();
+        let observer = Box::new(manual_observer_for(&source_path));
+        let mut demo = Demo::new(
+            config,
+            &mut out,
+            MockRatifier::from_decisions(decisions),
+            observer,
+        )
+        .unwrap();
         demo.run_rename()
     };
 

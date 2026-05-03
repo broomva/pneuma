@@ -25,7 +25,8 @@ use pneuma_lago_bridge::{JournalRecord, JournalWriter};
 use pneuma_praxis_bridge::{ExecutionOutcome, Executor, LocalPraxis, PraxisError};
 use pneuma_ratify::{ApprovalDecision, Ratifier};
 use pneuma_router::{Dispatch, dispatch};
-use sensorium_core::{Timestamp, WorkspaceContext, WorkspaceContextBuilder};
+use sensorium_context::Observer;
+use sensorium_core::WorkspaceContext;
 
 // --- Errors ----------------------------------------------------------------
 
@@ -83,23 +84,40 @@ pub struct DemoConfig<'a> {
 /// Type parameter `O` is anywhere `&mut O: std::io::Write` so callers
 /// can pass `std::io::stdout().lock()` for the binary path or a
 /// `Vec<u8>` for tests.
+///
+/// The `observer` is a `Box<dyn Observer>` so callers can swap
+/// implementations at runtime — `ManualObserver` for scripted demos,
+/// `FsObserver` for real filesystem observation, custom mocks for
+/// tests.
 pub struct Demo<'a, O: std::io::Write, R: Ratifier> {
     config: DemoConfig<'a>,
     out: O,
     ratifier: R,
+    observer: Box<dyn Observer>,
     renderer: HudRenderer,
     journal: JournalWriter,
 }
 
 impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
-    /// Construct from config + sinks.
-    pub fn new(config: DemoConfig<'a>, out: O, ratifier: R) -> Result<Self, DemoError> {
+    /// Construct from config + sinks + observer.
+    ///
+    /// The observer is queried once in [`Demo::run_rename`] to read
+    /// the substrate state at finalize-time. Pass a
+    /// [`sensorium_context::ManualObserver`] populated with the
+    /// focused file for the simplest case.
+    pub fn new(
+        config: DemoConfig<'a>,
+        out: O,
+        ratifier: R,
+        observer: Box<dyn Observer>,
+    ) -> Result<Self, DemoError> {
         let journal = JournalWriter::open(config.journal_path)?;
         let renderer = HudRenderer::new().with_width(config.hud_width);
         Ok(Self {
             config,
             out,
             ratifier,
+            observer,
             renderer,
             journal,
         })
@@ -124,10 +142,11 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
     /// Returns the [`DemoSummary`] on the happy path so callers /
     /// tests can inspect what happened.
     pub fn run_rename(&mut self) -> Result<DemoSummary, DemoError> {
-        // 1. Substrate.
-        let context = WorkspaceContextBuilder::neutral(Timestamp::now())
-            .with_visible_files(vec![sensorium_core::FileRef::new(self.config.source_path)])
-            .build();
+        // 1. Substrate. Read from the observer (`sensorium-context`)
+        //    instead of hand-building. The producer-side state — what
+        //    file is focused, what's in the activity ring — is the
+        //    observer's job. The demo just queries.
+        let context: WorkspaceContext = self.observer.current();
 
         // 2. Compose directive.
         let act = Self::find_rename_act();
@@ -411,12 +430,12 @@ fn build_confidence() -> Confidence {
     .expect("confidence is constructible")
 }
 
-/// Return a [`WorkspaceContext`] populated with a single visible file.
-/// Exposed for tests that want to drive the demo with their own
-/// substrate.
+/// Build a [`sensorium_context::ManualObserver`] populated with the
+/// focused file as its only visible file. Used by the binary and
+/// integration tests as the standard observer for the rename demo.
 #[must_use]
-pub fn build_demo_context(focused_file: &Path) -> WorkspaceContext {
-    WorkspaceContextBuilder::neutral(Timestamp::now())
-        .with_visible_files(vec![sensorium_core::FileRef::new(focused_file)])
-        .build()
+pub fn manual_observer_for(focused_file: &Path) -> sensorium_context::ManualObserver {
+    let observer = sensorium_context::ManualObserver::new(sensorium_core::Timestamp::now());
+    observer.set_focused_file(sensorium_core::FileRef::new(focused_file), false);
+    observer
 }
