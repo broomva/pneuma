@@ -1,0 +1,50 @@
+[package]
+name = "pneuma-demo"
+description = "End-to-end runnable demo of MIL Tier 2: rename a file via a typed directive, with live preview, ratification, journaling, and undo. The visible deliverable of Tier 2 Week 3."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "pneuma-demo"
+path = "src/main.rs"
+
+[dependencies]
+pneuma-core = { workspace = true }
+pneuma-acts = { workspace = true }
+pneuma-router = { workspace = true }
+pneuma-praxis-bridge = { workspace = true }
+pneuma-lago-bridge = { workspace = true }
+pneuma-hud = { workspace = true }
+pneuma-ratify = { workspace = true }
+sensorium-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"
+uninlined_format_args = "allow"
+needless_pass_by_value = "allow"
+too_many_lines = "allow"

@@ -1,0 +1,42 @@
+[package]
+name = "pneuma-hud"
+description = "Pure rendering for MIL's live-preview HUD. Takes Directive<S> + outcome/error and produces ASCII frames. No I/O, no terminal control."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+pneuma-core = { workspace = true }
+pneuma-praxis-bridge = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pneuma-acts = { workspace = true }
+chrono = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"
+# These are stylistic — the code is consistently more readable for
+# this rendering crate with explicit format args and traditional Option
+# chains. v0.3 polish pass can revisit.
+uninlined_format_args = "allow"
+trivially_copy_pass_by_ref = "allow"
+map_unwrap_or = "allow"
