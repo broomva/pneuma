@@ -30,7 +30,7 @@
 //!
 //! ## Coverage
 //!
-//! v0.2 ships ~30 acts grouped by domain:
+//! v0.2 ships 31 acts grouped by domain:
 //!
 //! - **File** (8): open, read, rename, move, copy, delete, save, write
 //! - **Workspace** (6): focus, split_pane, close_window, switch_app,
@@ -39,9 +39,13 @@
 //! - **Agent** (4): refactor, explain, review, generate
 //! - **Spaces** (3): message_send, message_react, broadcast
 //! - **Inspection** (4): show_state, list_recent, search, what_is
+//! - **Browser** (1): navigate
 //!
-//! 30 total. Each has a corresponding test in `tests/registry.rs`
-//! verifying slot signatures, reversibility, and executor hints.
+//! 31 total. Each has a corresponding test in `tests/registry.rs`
+//! verifying slot signatures, reversibility, and executor hints. The
+//! browser namespace is the seed of step #13 of the MIL build order
+//! (`MIL-PROJECT.md` §11.2) — first real OS-control act, executed via
+//! AppleScript on macOS by `pneuma-praxis-bridge`.
 
 #![doc = include_str!("../README.md")]
 
@@ -53,6 +57,7 @@ use pneuma_core::{
 };
 
 mod agent;
+mod browser;
 mod file;
 mod inspection;
 mod selection;
@@ -75,6 +80,7 @@ pub fn registry() -> Vec<Act> {
     acts.extend(agent::acts());
     acts.extend(spaces::acts());
     acts.extend(inspection::acts());
+    acts.extend(browser::acts());
     acts
 }
 
@@ -263,6 +269,15 @@ fn canonical_verb_aliases() -> &'static [(&'static str, &'static str)] {
         ("search", "inspection.search"),
         ("describe", "inspection.what_is"),
         ("what", "inspection.what_is"),
+        // browser
+        ("navigate", "browser.navigate"),
+        ("go", "browser.navigate"),
+        ("browse", "browser.navigate"),
+        // Note: "open" is already aliased to "file.open"; we deliberately
+        // do not double-bind it here. Users who want to open a URL must
+        // say "go to https://..." or "navigate to https://...". A future
+        // `pneuma-resolver` will disambiguate "open https://..." once it
+        // can recognize URL referents in the verb's first argument.
     ]
 }
 

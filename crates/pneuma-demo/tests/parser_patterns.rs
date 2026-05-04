@@ -169,3 +169,73 @@ fn parsed_utterance_echoes_input() {
     let parsed = parse_utterance("  rename to bar.txt  ", &r).unwrap();
     assert_eq!(parsed.utterance, "rename to bar.txt");
 }
+
+// --- browser.navigate (step #13) ------------------------------------------
+
+#[test]
+fn navigate_to_url_extracts_url() {
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("navigate to https://example.com", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "browser.navigate");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("url".to_owned(), "https://example.com".to_owned())]
+    );
+}
+
+#[test]
+fn go_to_url_extracts_url() {
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("go to https://example.com", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "browser.navigate");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("url".to_owned(), "https://example.com".to_owned())]
+    );
+}
+
+#[test]
+fn browse_url_without_to_extracts_url() {
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("browse https://example.com", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "browser.navigate");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("url".to_owned(), "https://example.com".to_owned())]
+    );
+}
+
+#[test]
+fn go_url_without_to_extracts_url() {
+    // "go example.com" should work too — "to" is optional for navigate.
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("go example.com", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "browser.navigate");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("url".to_owned(), "example.com".to_owned())]
+    );
+}
+
+#[test]
+fn navigate_with_filler_words_strips_them() {
+    // "go to it" with no URL = missing slot. Filler-only utterance.
+    let r = ActRegistry::canonical();
+    let err = parse_utterance("go to", &r).unwrap_err();
+    assert!(matches!(err, ParseError::MissingSlot { ref slot, .. } if slot == "url"));
+}
+
+#[test]
+fn navigate_without_url_after_to_errors() {
+    let r = ActRegistry::canonical();
+    let err = parse_utterance("navigate to ", &r).unwrap_err();
+    assert!(matches!(err, ParseError::MissingSlot { ref slot, .. } if slot == "url"));
+}
+
+#[test]
+fn navigate_alone_errors() {
+    // Bare "navigate" is recognized but URL is required.
+    let r = ActRegistry::canonical();
+    let err = parse_utterance("navigate", &r).unwrap_err();
+    assert!(matches!(err, ParseError::MissingSlot { ref slot, .. } if slot == "url"));
+}

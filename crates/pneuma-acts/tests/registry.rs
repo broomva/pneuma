@@ -2,10 +2,10 @@
 //!
 //! Properties under test:
 //!
-//! - The seed registry contains exactly 30 acts.
+//! - The seed registry contains exactly 31 acts.
 //! - Each act has a unique [`ActId`].
-//! - File / workspace / selection / agent / spaces / inspection counts
-//!   match the spec (8 / 6 / 5 / 4 / 3 / 4).
+//! - File / workspace / selection / agent / spaces / inspection / browser
+//!   counts match the spec (8 / 6 / 5 / 4 / 3 / 4 / 1).
 //! - Irreversible acts always have `requires_ratify` after running
 //!   through `PolicyEnvelope::intrinsic`.
 //! - Every reversible act has a `reverse_recipe` set.
@@ -18,9 +18,16 @@ use pneuma_acts::registry;
 use pneuma_core::{Act, BlastRadius, PolicyEnvelope, Reversibility};
 
 #[test]
-fn seed_registry_has_thirty_acts() {
+fn seed_registry_has_thirty_one_acts() {
     let acts = registry();
-    assert_eq!(acts.len(), 30, "seed registry should have exactly 30 acts");
+    // 30 (file/workspace/selection/agent/spaces/inspection) + 1 (browser).
+    // Browser was added in step #13 (MIL-PROJECT.md §11.2) — first
+    // OS-control act, executed via AppleScript by pneuma-praxis-bridge.
+    assert_eq!(
+        acts.len(),
+        31,
+        "seed registry should have 31 acts (30 from v0.2 base + browser.navigate)"
+    );
 }
 
 #[test]
@@ -48,6 +55,7 @@ fn domain_counts_match_spec() {
     assert_eq!(count("agent."), 4, "agent domain has 4 acts");
     assert_eq!(count("spaces."), 3, "spaces domain has 3 acts");
     assert_eq!(count("inspection."), 4, "inspection domain has 4 acts");
+    assert_eq!(count("browser."), 1, "browser domain has 1 act (navigate)");
 }
 
 #[test]
