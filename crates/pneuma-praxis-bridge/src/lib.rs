@@ -50,12 +50,13 @@
 //!
 //! ## Acts supported in v0.2
 //!
-//! | Act           | Reversibility | Reverse                                |
-//! |---------------|---------------|----------------------------------------|
-//! | `file.read`   | Free          | None — read has no side effects        |
-//! | `file.rename` | Costly        | `RenameBack { from, to }`              |
-//! | `file.copy`   | Costly        | `DeleteCopy { path }`                  |
-//! | `file.write`  | Costly        | `RestoreContent { path, prior }`       |
+//! | Act               | Reversibility | Reverse                                |
+//! |-------------------|---------------|----------------------------------------|
+//! | `file.read`       | Free          | None — read has no side effects        |
+//! | `file.rename`     | Costly        | `RenameBack { from, to }`              |
+//! | `file.copy`       | Costly        | `DeleteCopy { path }`                  |
+//! | `file.write`      | Costly        | `RestoreContent { path, prior }`       |
+//! | `browser.navigate`| Costly        | `RestoreUrl { browser, prior_url }`    |
 //!
 //! `file.delete` is intentionally **not** wired here. It is
 //! [`Reversibility::Irreversible`][rev]; v0.2 punts irreversible-real
@@ -63,6 +64,30 @@
 //! exists.
 //!
 //! [rev]: pneuma_core::Reversibility::Irreversible
+//!
+//! ## `browser.navigate` execution model
+//!
+//! Step #13 of `MIL-PROJECT.md` §11.2. The first **OS-control** act —
+//! it leaves the file system entirely and reaches into another running
+//! application (Safari).
+//!
+//! - **Platform.** macOS only in v0.2. Other platforms return
+//!   `PraxisError::PlatformUnsupported`. The dispatch is `cfg`-gated
+//!   so the bridge compiles on Linux (CI matrix passes) but the
+//!   AppleScript path only links on macOS.
+//! - **Browser.** Safari only in v0.2. The reverse-action stores the
+//!   browser name as a string so future variants (Chrome, Arc, Brave)
+//!   plug in without touching the enum.
+//! - **Reverse.** We capture the front tab's URL *before* the navigation
+//!   fires, then store that as `ReverseAction::RestoreUrl`. If the user
+//!   undoes, we navigate the front tab back to the captured URL. The
+//!   reverse fails (returns `PraxisError::ReverseRefused`) if Safari
+//!   is no longer running, has no windows, or has had the relevant tab
+//!   closed.
+//! - **Injection safety.** AppleScript is built with simple character
+//!   denylisting (no `"`, no `\`, no newlines in URLs). v0.3 will use
+//!   `url::Url::parse` for principled validation; v0.2 trades
+//!   correctness on edge URLs for zero new dependencies.
 
 #![doc = include_str!("../README.md")]
 
@@ -125,6 +150,35 @@ pub enum PraxisError {
     /// reversing a rename when something is already at the original path).
     #[error("reverse-action refused: {0}")]
     ReverseRefused(String),
+
+    /// The act requires a platform feature this build doesn't have
+    /// (e.g. `browser.navigate` outside macOS). Carries a static
+    /// reason so callers can surface it without allocations.
+    #[error("act requires unsupported platform: {reason}")]
+    PlatformUnsupported {
+        /// Static reason, e.g. `"browser.navigate requires macOS osascript"`.
+        reason: &'static str,
+    },
+
+    /// An external command (osascript, etc.) returned a non-zero exit
+    /// code. Distinct from `Filesystem` — we shelled out and the shell
+    /// said no.
+    #[error("external command `{command}` failed: {reason}")]
+    ExternalCommand {
+        /// The command name we spawned.
+        command: String,
+        /// Free-form reason (typically the trimmed stderr of the command).
+        reason: String,
+    },
+
+    /// A URL was rejected because it contained AppleScript-unsafe
+    /// characters. v0.2 blocks `"`, `\`, and newlines without parsing
+    /// the URL further.
+    #[error("URL rejected: {reason}")]
+    UnsafeUrl {
+        /// Why the URL was rejected.
+        reason: &'static str,
+    },
 }
 
 // --- ReverseAction ---------------------------------------------------------
@@ -159,6 +213,15 @@ pub enum ReverseAction {
         path: PathBuf,
         /// Bytes prior to overwrite.
         prior: Vec<u8>,
+    },
+    /// Navigate the named browser's frontmost tab back to the URL it
+    /// was showing before this act executed. Captured by
+    /// `execute_browser_navigate` at execution time.
+    RestoreUrl {
+        /// Browser application name (v0.2 always `"Safari"`).
+        browser: String,
+        /// URL the browser was showing before the act.
+        prior_url: String,
     },
 }
 
@@ -234,6 +297,7 @@ impl Executor for LocalPraxis {
             "file.rename" => execute_rename(call),
             "file.copy" => execute_copy(call),
             "file.write" => execute_write(call),
+            "browser.navigate" => execute_browser_navigate(call),
             other => Err(PraxisError::UnsupportedAct(other.to_owned())),
         }
     }
@@ -248,6 +312,9 @@ impl Executor for LocalPraxis {
             ReverseAction::RenameBack { from, to } => reverse_rename(original_call, from, to),
             ReverseAction::DeleteCopy { path } => reverse_copy(path),
             ReverseAction::RestoreContent { path, prior } => reverse_write(path, prior),
+            ReverseAction::RestoreUrl { browser, prior_url } => {
+                reverse_browser_navigate(browser, prior_url)
+            }
         }
     }
 }
@@ -342,6 +409,35 @@ fn execute_write(call: &PraxisCall) -> Result<ExecutionOutcome, PraxisError> {
     })
 }
 
+/// Browser to drive on macOS in v0.2. Hard-coded to Safari because
+/// AppleScript's URL-setting dialect varies per browser; future versions
+/// will lift this into a `BrowserKind` enum or auto-detect from the
+/// front application.
+const V02_BROWSER: &str = "Safari";
+
+fn execute_browser_navigate(call: &PraxisCall) -> Result<ExecutionOutcome, PraxisError> {
+    let target_url = require_url_slot(call, "url")?;
+    reject_unsafe_url(&target_url)?;
+    // Capture-then-set: the prior URL is recorded *before* we navigate
+    // so the reverse-action recipe is complete the moment execution
+    // succeeds. If the capture or the navigate fails, no journal entry
+    // is created — execution returned an error.
+    let prior_url = capture_browser_front_url(V02_BROWSER)?;
+    set_browser_front_url(V02_BROWSER, &target_url)?;
+    Ok(ExecutionOutcome {
+        act_id: call.act_id.clone(),
+        result: serde_json::json!({
+            "browser": V02_BROWSER,
+            "navigated_to": target_url,
+            "prior_url": prior_url,
+        }),
+        reverse_action: ReverseAction::RestoreUrl {
+            browser: V02_BROWSER.to_owned(),
+            prior_url,
+        },
+    })
+}
+
 // --- Reverse handlers -------------------------------------------------------
 
 fn reverse_rename(_call: &PraxisCall, from: &PathBuf, to: &PathBuf) -> Result<(), PraxisError> {
@@ -369,6 +465,102 @@ fn reverse_copy(path: &PathBuf) -> Result<(), PraxisError> {
 fn reverse_write(path: &PathBuf, prior: &[u8]) -> Result<(), PraxisError> {
     std::fs::write(path, prior)?;
     Ok(())
+}
+
+fn reverse_browser_navigate(browser: &str, prior_url: &str) -> Result<(), PraxisError> {
+    // Refuse on URL drift / injection attempts. The captured URL came
+    // from our own AppleScript so a `"` would only appear if Safari
+    // reported one — extremely unlikely but we still refuse rather
+    // than smuggle.
+    reject_unsafe_url(prior_url)?;
+    set_browser_front_url(browser, prior_url)
+}
+
+// --- Browser driver (cfg-gated AppleScript) ---------------------------------
+
+/// Rejects URLs that would break our AppleScript shell-out.
+///
+/// v0.2 stance: deny-list. v0.3 will use `url::Url::parse` to validate
+/// the URL is well-formed, then re-serialize through proper quoting.
+fn reject_unsafe_url(url: &str) -> Result<(), PraxisError> {
+    if url.contains('"') {
+        return Err(PraxisError::UnsafeUrl {
+            reason: "URL contains double-quote (would break AppleScript literal)",
+        });
+    }
+    if url.contains('\\') {
+        return Err(PraxisError::UnsafeUrl {
+            reason: "URL contains backslash (would break AppleScript literal)",
+        });
+    }
+    if url.contains('\n') || url.contains('\r') {
+        return Err(PraxisError::UnsafeUrl {
+            reason: "URL contains newline",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn capture_browser_front_url(browser: &str) -> Result<String, PraxisError> {
+    let script = format!("tell application \"{browser}\" to URL of current tab of front window");
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(PraxisError::ExternalCommand {
+            command: "osascript".to_owned(),
+            reason: stderr.trim().to_owned(),
+        });
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok(url)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_browser_front_url(_browser: &str) -> Result<String, PraxisError> {
+    Err(PraxisError::PlatformUnsupported {
+        reason: "browser.navigate requires macOS osascript",
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn set_browser_front_url(browser: &str, url: &str) -> Result<(), PraxisError> {
+    // Caller is responsible for `reject_unsafe_url`. We re-check anyway
+    // because this function is also called from the reverse path with
+    // a prior_url whose provenance came from a previous call to
+    // `capture_browser_front_url` — defensible defense-in-depth.
+    reject_unsafe_url(url)?;
+    let script = format!(
+        "tell application \"{browser}\"\n  \
+            activate\n  \
+            if (count of windows) is 0 then\n    \
+                make new document\n  \
+            end if\n  \
+            set URL of current tab of front window to \"{url}\"\n\
+        end tell"
+    );
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(PraxisError::ExternalCommand {
+            command: "osascript".to_owned(),
+            reason: stderr.trim().to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_browser_front_url(_browser: &str, _url: &str) -> Result<(), PraxisError> {
+    Err(PraxisError::PlatformUnsupported {
+        reason: "browser.navigate requires macOS osascript",
+    })
 }
 
 // --- Slot extraction helpers ------------------------------------------------
@@ -405,6 +597,23 @@ fn require_string_slot(call: &PraxisCall, name: &str) -> Result<String, PraxisEr
             act: call.act_id.as_str().to_owned(),
             slot: name.to_owned(),
             reason: format!("expected String, got {other:?}"),
+        }),
+    }
+}
+
+/// Extract a `Referent::Url(String)` binding from a slot. Used by
+/// `browser.navigate`. Returns the inner URL string by clone.
+fn require_url_slot(call: &PraxisCall, name: &str) -> Result<String, PraxisError> {
+    let value = slot(call, name).ok_or_else(|| PraxisError::MissingSlot {
+        act: call.act_id.as_str().to_owned(),
+        slot: name.to_owned(),
+    })?;
+    match value {
+        ResolvedSlotValue::Referent(ReferentValue::Url(url)) => Ok(url.clone()),
+        other => Err(PraxisError::WrongSlotKind {
+            act: call.act_id.as_str().to_owned(),
+            slot: name.to_owned(),
+            reason: format!("expected Referent(Url), got {other:?}"),
         }),
     }
 }

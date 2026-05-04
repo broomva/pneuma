@@ -18,6 +18,7 @@
 //! - `"delete"` / `"delete it"` / `"rm"` / `"remove"`
 //! - `"open"` / `"open it"`
 //! - `"read"` / `"show"`
+//! - `"navigate to URL"` / `"go to URL"` / `"browse URL"` / `"go URL"`
 //!
 //! The verb is looked up via [`pneuma_acts::ActRegistry::lookup_by_verb`];
 //! arguments are extracted by simple word splitting around `to`. The
@@ -136,6 +137,7 @@ fn extract_payload_slots(
     match act_id {
         "file.rename" => extract_rename_slots(tokens, utterance),
         "file.copy" | "file.move" => extract_to_destination_slots(tokens, utterance, act_id),
+        "browser.navigate" => extract_navigate_slots(tokens, utterance),
         // Acts with no payload slots in v0.2:
         "file.read"
         | "file.open"
@@ -212,6 +214,43 @@ fn extract_to_destination_slots(
     } else {
         Err(missing())
     }
+}
+
+/// Extract `url` from "navigate [to] URL" / "go [to] URL" / "browse [it] URL".
+///
+/// More permissive than the file-targeted extractors because URLs can
+/// follow the verb directly (no `to` keyword) — `"go example.com"` is
+/// fluent English. We strip filler words (`it`, `this`, `that`) and
+/// take whatever non-filler tokens remain (or whatever follows `to`)
+/// as the URL.
+fn extract_navigate_slots(
+    tokens: &[&str],
+    utterance: &str,
+) -> Result<Vec<(String, String)>, ParseError> {
+    let missing = || ParseError::MissingSlot {
+        act_id: "browser.navigate".to_owned(),
+        slot: "url".to_owned(),
+        utterance: utterance.to_owned(),
+    };
+    let url_words: Vec<String> = if let Some(idx) = position_lower(tokens, "to") {
+        tokens
+            .iter()
+            .skip(idx + 1)
+            .map(|t| (*t).to_string())
+            .collect()
+    } else {
+        // No "to" — accept "go example.com" / "navigate example.com" / "browse example.com".
+        tokens
+            .iter()
+            .copied()
+            .filter(|t| !is_filler_word(t))
+            .map(str::to_string)
+            .collect()
+    };
+    if url_words.is_empty() {
+        return Err(missing());
+    }
+    Ok(vec![("url".to_owned(), url_words.join(" "))])
 }
 
 fn position_lower(tokens: &[&str], needle: &str) -> Option<usize> {

@@ -6,9 +6,10 @@ use pneuma_core::ActId;
 // --- Basic shape ----------------------------------------------------------
 
 #[test]
-fn canonical_registry_has_all_thirty_acts() {
+fn canonical_registry_has_all_thirty_one_acts() {
     let r = ActRegistry::canonical();
-    assert_eq!(r.act_count(), 30);
+    // 30 (file/workspace/selection/agent/spaces/inspection) + 1 (browser).
+    assert_eq!(r.act_count(), 31);
 }
 
 #[test]
@@ -93,6 +94,44 @@ fn lookup_by_verb_trims_whitespace() {
 fn lookup_by_verb_unknown_returns_none() {
     let r = ActRegistry::canonical();
     assert!(r.lookup_by_verb("teleport").is_none());
+}
+
+// --- Browser namespace (step #13) -----------------------------------------
+
+#[test]
+fn browser_navigate_act_registered() {
+    let r = ActRegistry::canonical();
+    let id = ActId::new("browser.navigate").unwrap();
+    let act = r.lookup_by_id(&id).expect("browser.navigate canonical");
+    assert_eq!(act.id.as_str(), "browser.navigate");
+    // The act has exactly one slot named `url` carrying a URL referent.
+    assert_eq!(act.slots.len(), 1);
+    assert_eq!(act.slots[0].name, "url");
+}
+
+#[test]
+fn browser_navigate_aliases_resolve() {
+    let r = ActRegistry::canonical();
+    let canonical = Some("browser.navigate");
+    assert_eq!(
+        r.lookup_by_verb("navigate").map(|a| a.id.as_str()),
+        canonical
+    );
+    assert_eq!(r.lookup_by_verb("go").map(|a| a.id.as_str()), canonical);
+    assert_eq!(r.lookup_by_verb("browse").map(|a| a.id.as_str()), canonical);
+}
+
+#[test]
+fn open_remains_aliased_to_file_open_not_browser_navigate() {
+    // Documents the v0.2 stance: ambiguity between file-open and
+    // browser-open is resolved by refusing to overload `open`. Users
+    // must say "go to ..." or "navigate to ...". A future
+    // pneuma-resolver will disambiguate by URL detection.
+    let r = ActRegistry::canonical();
+    assert_eq!(
+        r.lookup_by_verb("open").map(|a| a.id.as_str()),
+        Some("file.open")
+    );
 }
 
 // --- Alias registration ---------------------------------------------------
