@@ -21,6 +21,7 @@ pneuma-core = { workspace = true }
 pneuma-acts = { workspace = true }
 pneuma-router = { workspace = true }
 pneuma-praxis-bridge = { workspace = true }
+pneuma-arcan-bridge = { workspace = true }
 pneuma-lago-bridge = { workspace = true }
 pneuma-hud = { workspace = true }
 pneuma-ratify = { workspace = true }

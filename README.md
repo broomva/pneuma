@@ -18,9 +18,9 @@ its afterlife.**
 | [`pneuma-lago-bridge`](crates/pneuma-lago-bridge) | Append-only NDJSON journal — `JournalRecord::{Committed, Executed, Reversed, Cancelled, Failed}`. | 8 |
 | [`pneuma-hud`](crates/pneuma-hud) | Pure rendering — every directive state + outcomes + errors → ASCII frames. | 14 |
 | [`pneuma-ratify`](crates/pneuma-ratify) | Approval-channel FSM — `ApprovalDecision`, `Ratifier` trait, `StdinRatifier`, `MockRatifier`. | 15 |
-| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; rename, navigate, and switch-app flows. | 35 + 3 ignored |
+| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; rename, navigate, switch-app, and **agent** flows. The agent path forwards directives to `claude` (or any CLI via `MIL_AGENT_COMMAND`). | 40 + 3 ignored |
 
-**Total tests:** 205 · 5 ignored (interactive) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
+**Total tests:** 210 · 5 ignored (interactive) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
 
 Path-deps `sensorium-context` (sibling repo at `../sensorium`) so the same
 CI matrix applies. See [`MIL-PROJECT.md`](../../MIL-PROJECT.md) §10 for the
@@ -57,6 +57,17 @@ $ MIL_UTTERANCE='switch to Safari' cargo run -p pneuma-demo
 
 $ MIL_UTTERANCE='switch Visual Studio Code' cargo run -p pneuma-demo
 # Multi-word app names work
+
+$ MIL_UTTERANCE='explain MIL in one sentence' cargo run -p pneuma-demo
+# Forwards to `claude --print`, captures the response in a HUD frame,
+# journals as AgentExecuted. Requires `claude` on PATH.
+
+$ MIL_UTTERANCE='refactor crates/pneuma-router/src/lib.rs' cargo run -p pneuma-demo
+# Same path; target is auto-promoted to a File referent if the path exists.
+
+$ MIL_AGENT_COMMAND='codex' MIL_AGENT_ARGS='--quiet,--print' \
+  MIL_UTTERANCE='review this PR' cargo run -p pneuma-demo
+# Swap to a different agent CLI without touching MIL.
 ```
 
 The user presses Enter to commit, `u` to undo, `q` to cancel. Journal is
@@ -89,13 +100,13 @@ Cursor, Arcan internal) are downstream of `Dispatch::Arcan(AgentPrompt)`.
 v0.2.0 — Tier 2 (single-act demo) complete, Phase 1.1 (real Observer)
 complete, Phase 2.1 (deterministic parser) complete, steps #13
 (`browser.navigate`) + #14 (`workspace.switch_app`) Praxis acts + demo
-flows complete, **step #16 Arcan bridge library complete** (subprocess
-adapter + Claude Code defaults; demo integration follows). Tier 3 — the
-empirical milestone — is runnable on macOS for the deterministic flows;
-the Arcan path is library-ready and unblocks `agent.refactor` /
-`agent.explain` / `agent.review` / `agent.generate` once the demo wires
-it. Remaining: #15 (`sensorium-context-macos`), #17 (sensorium-voice),
-demo integration for Arcan.
+flows complete, **step #16 Arcan bridge library + demo flow complete**.
+Tier 3 — the empirical milestone — is now fully runnable on macOS: a
+human user types natural language, the deterministic flows execute on
+the OS directly, and `agent.*` utterances delegate to a Claude Code
+subprocess through the typed contract. Remaining: #15
+(`sensorium-context-macos`), #17 (sensorium-voice), #18
+(`pneuma-resolver`).
 
 ## Cross-references
 
