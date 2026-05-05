@@ -303,18 +303,20 @@ impl ArcanExecutor for StdioCommandArcan {
             error,
         })?;
 
-        // Write the prompt to stdin, then close it so the subprocess
-        // can finish reading. Holding stdin open would deadlock with a
-        // subprocess that reads-then-responds.
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(prompt_str.as_bytes()).map_err(|error| {
-                ArcanError::StdinWriteFailed {
-                    command: self.command.clone(),
-                    error,
-                }
-            })?;
-            // stdin is dropped here, closing the pipe.
-        }
+        // Write the prompt to stdin, then close the pipe so the
+        // subprocess can finish reading. Holding stdin open would
+        // deadlock with a subprocess that reads-then-responds.
+        //
+        // We record any write error rather than returning immediately.
+        // A subprocess that exits *before* reading stdin (e.g.,
+        // `/usr/bin/false` on macOS) would surface as `BrokenPipe`
+        // here even though the more diagnostic signal is its non-zero
+        // exit code. We check exit code first below; the write error
+        // only surfaces if the subprocess otherwise succeeded.
+        let write_result = child.stdin.take().map(|mut stdin| {
+            // stdin closes when the closure returns and `stdin` drops.
+            stdin.write_all(prompt_str.as_bytes())
+        });
 
         let output = child
             .wait_with_output()
@@ -323,12 +325,26 @@ impl ArcanExecutor for StdioCommandArcan {
                 error,
             })?;
 
+        // Exit-code check wins over write errors. If the subprocess
+        // died with a non-zero exit, that's the user-relevant signal
+        // (e.g., "claude: API key invalid"), not "BrokenPipe writing
+        // to a process that already exited."
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             return Err(ArcanError::SubprocessExitNonZero {
                 command: self.command.clone(),
                 exit_code: output.status.code(),
                 stderr,
+            });
+        }
+
+        // Subprocess succeeded but our stdin write failed — that's a
+        // misconfiguration (the agent CLI didn't read the prompt and
+        // produced empty / canned output). Surface the write error.
+        if let Some(Err(write_err)) = write_result {
+            return Err(ArcanError::StdinWriteFailed {
+                command: self.command.clone(),
+                error: write_err,
             });
         }
 
