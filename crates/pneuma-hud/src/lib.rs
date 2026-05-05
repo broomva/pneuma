@@ -289,6 +289,37 @@ impl HudRenderer {
         HudFrame::new(HudFrameKind::Outcome, body)
     }
 
+    /// Render the response of an Arcan (agent-runtime) execution.
+    ///
+    /// Takes primitive args rather than an `ArcanOutcome` struct so
+    /// `pneuma-hud` stays free of a dependency on
+    /// `pneuma-arcan-bridge`. The demo crate (which depends on both)
+    /// extracts the fields and passes them here.
+    ///
+    /// `response` is rendered as a multi-line block with line breaks
+    /// preserved, prefixed with `│ ` for HUD frame consistency.
+    pub fn render_arcan_outcome(
+        &self,
+        act_id: &str,
+        executor: &str,
+        response: &str,
+        exit_code: i32,
+    ) -> HudFrame {
+        let mut body = String::with_capacity(self.width * 16);
+        self.title(&mut body, "AGENT DONE", &format!("act: {act_id}"));
+        let _ = writeln!(body, "│ executor: {executor}  exit_code: {exit_code}");
+        body.push_str("│\n│ response:\n");
+        for line in response.lines() {
+            let _ = writeln!(body, "│   {line}");
+        }
+        if response.is_empty() {
+            body.push_str("│   (empty response from agent)\n");
+        }
+        body.push_str("│\n│ no reverse — agent responses are recorded, not undone\n");
+        self.bottom(&mut body);
+        HudFrame::new(HudFrameKind::Outcome, body)
+    }
+
     // --- Errors ------------------------------------------------------------
 
     /// Render a contract-level error (pre-dispatch).

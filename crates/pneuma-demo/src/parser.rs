@@ -140,6 +140,9 @@ fn extract_payload_slots(
         "file.copy" | "file.move" => extract_to_destination_slots(tokens, utterance, act_id),
         "browser.navigate" => extract_navigate_slots(tokens, utterance),
         "workspace.switch_app" => extract_switch_app_slots(tokens, utterance),
+        "agent.refactor" | "agent.explain" | "agent.review" | "agent.generate" => {
+            extract_agent_slots(tokens, utterance)
+        }
         // Acts with no payload slots in v0.2:
         "file.read"
         | "file.open"
@@ -287,6 +290,47 @@ fn extract_switch_app_slots(
         return Err(missing());
     }
     Ok(vec![("target".to_owned(), app_words.join(" "))])
+}
+
+/// Extract `target` from "VERB SUBJECT [tail]" for agent acts.
+///
+/// Strategy: take everything after the verb, drop filler words, join
+/// with single spaces. The result is a string-typed `target` slot
+/// that the demo's `run_arcan_flow` will promote into the right
+/// referent variant (File if the string is a path that exists, Url
+/// otherwise).
+///
+/// Examples:
+/// - `"explain MIL"` → `target = "MIL"`
+/// - `"refactor the auth module"` → `target = "auth module"`
+/// - `"review crates/foo/src/lib.rs"` → `target = "crates/foo/src/lib.rs"`
+///
+/// agent.generate has no `target` slot in v0.2 (only `instruction`),
+/// but we still extract one for compatibility — the demo's auto-bind
+/// path will skip unused slots.
+///
+/// Returns `Result` for shape-consistency with the other
+/// `extract_*_slots` helpers (which can fail with MissingSlot); this
+/// one is always `Ok`.
+#[allow(clippy::unnecessary_wraps)]
+fn extract_agent_slots(
+    tokens: &[&str],
+    _utterance: &str,
+) -> Result<Vec<(String, String)>, ParseError> {
+    let target_words: Vec<String> = tokens
+        .iter()
+        .copied()
+        .filter(|t| !is_filler_word(t))
+        .map(str::to_string)
+        .collect();
+    if target_words.is_empty() {
+        // Bare "explain"/"refactor"/etc. — no target. Empty payload;
+        // the demo's lifecycle will error at finalize() with a
+        // contract error citing the unbound `target` slot, which is
+        // the right diagnostic.
+        return Ok(Vec::new());
+    }
+    Ok(vec![("target".to_owned(), target_words.join(" "))])
 }
 
 fn position_lower(tokens: &[&str], needle: &str) -> Option<usize> {

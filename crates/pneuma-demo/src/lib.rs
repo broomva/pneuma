@@ -18,6 +18,7 @@ use chrono::Utc;
 use thiserror::Error;
 
 use pneuma_acts::registry;
+use pneuma_arcan_bridge::{ArcanError, ArcanExecutor};
 use pneuma_core::act::ResolvedSlotValue;
 use pneuma_core::{
     Act, AppId, BindingKind, Confidence, ConfidenceProducer, ConfidenceScore, ContextRef,
@@ -43,9 +44,13 @@ pub enum DemoError {
     #[error("contract: {0}")]
     Contract(ContractError),
 
-    /// Error during executor dispatch.
+    /// Error during Praxis executor dispatch.
     #[error("executor: {0}")]
     Executor(#[from] PraxisError),
+
+    /// Error during Arcan executor dispatch.
+    #[error("agent: {0}")]
+    Arcan(ArcanError),
 
     /// Journal I/O error.
     #[error("journal: {0}")]
@@ -198,8 +203,35 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
         self.run_directive_lifecycle(composing, confidence, policy)
     }
 
-    /// The act-agnostic correction-loop driver shared by every
-    /// `run_*` variant.
+    /// Run an `agent.*` directive through the supplied
+    /// [`ArcanExecutor`] (step #16b of `MIL-PROJECT.md` §11.2).
+    ///
+    /// This is the user-facing surface for the agent path. The
+    /// directive's `instruction` field is the natural-language ask
+    /// (taken verbatim from the parsed utterance); slots carry whatever
+    /// resolved entities the parser surfaced (target file, app name,
+    /// URL, etc.). The router emits `Dispatch::Arcan(AgentPrompt)`;
+    /// the bridge formats it for stdin and dispatches to the
+    /// configured agent CLI subprocess.
+    ///
+    /// `act_id` selects which `agent.*` act to use (`agent.refactor`,
+    /// `agent.explain`, `agent.review`, `agent.generate`). The slot
+    /// payload binds whichever slots the act requires.
+    pub fn run_arcan(
+        &mut self,
+        act_id: &str,
+        instruction: &str,
+        payload_slots: Vec<(String, ResolvedSlotValue)>,
+        arcan: &dyn ArcanExecutor,
+    ) -> Result<DemoSummary, DemoError> {
+        let act = Self::find_arcan_act(act_id)?;
+        let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
+        let composing = build_arcan_directive(act, instruction, payload_slots);
+        let confidence = build_arcan_confidence(&composing);
+        self.run_directive_lifecycle_arcan(composing, confidence, policy, arcan)
+    }
+
+    /// The act-agnostic correction-loop driver for **Praxis** flows.
     ///
     /// Steps:
     ///
@@ -217,105 +249,15 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
     /// The caller supplies a fully-composed [`Directive`], its slot
     /// confidences, and its policy envelope. Everything downstream
     /// (HUD frames, journal records, ratify prompts) is act-agnostic.
+    ///
+    /// For Arcan flows, see [`Self::run_directive_lifecycle_arcan`].
     pub fn run_directive_lifecycle(
         &mut self,
         composing: Directive<pneuma_core::Composing>,
         confidence: Confidence,
         policy: PolicyEnvelope,
     ) -> Result<DemoSummary, DemoError> {
-        // 1. Substrate. Read from the observer (`sensorium-context`)
-        //    instead of hand-building. The producer-side state — what
-        //    file is focused, what's in the activity ring — is the
-        //    observer's job. The demo just queries.
-        let context: WorkspaceContext = self.observer.current();
-
-        // 2 (was 3). Render composing.
-        let frame = self.renderer.render_composing(&composing);
-        self.print_frame(&frame)?;
-
-        // 3. Finalize.
-        let snapshot = context.snapshot();
-        let context_ref = ContextRef::new(
-            ContextSnapshotId::from_uuid(snapshot.id.into_inner()),
-            snapshot.taken_at.into_inner(),
-        );
-        let ready = match composing.try_finalize(context_ref, policy, confidence) {
-            Ok(r) => r,
-            Err((_, err)) => {
-                let frame = self.renderer.render_contract_error(&err);
-                self.print_frame(&frame)?;
-                return Err(err.into());
-            }
-        };
-
-        // 5. Render ready.
-        let frame = self.renderer.render_ready(&ready);
-        self.print_frame(&frame)?;
-
-        // 6. Pre-commit prompt loop. Only Commit/Approve and
-        //    Cancel/Reject are valid here; everything else gets a
-        //    friendly re-prompt. This addresses UX findings #1, #2, #4
-        //    from the user-perspective review.
-        let committed = loop {
-            self.print_pre_commit_prompt()?;
-            match self.ratifier.read_decision() {
-                ApprovalDecision::Commit | ApprovalDecision::Approve => match ready.commit() {
-                    Ok(c) => break c,
-                    Err((_returned_ready, err)) => {
-                        // commit() consumed `ready`. The returned ready
-                        // is shadowed here because we surface the error
-                        // and return — no retry path for a contract
-                        // violation at commit time.
-                        let frame = self.renderer.render_contract_error(&err);
-                        self.print_frame(&frame)?;
-                        return Err(err.into());
-                    }
-                },
-                ApprovalDecision::Cancel | ApprovalDecision::Reject => {
-                    self.journal_cancel(ready.id, "user cancelled at ready")?;
-                    self.print_info("CANCELLED", "directive discarded; file unchanged.")?;
-                    return Err(DemoError::Cancelled);
-                }
-                ApprovalDecision::Undo => {
-                    self.print_info(
-                        "NOTE",
-                        "nothing to undo yet — directive hasn't committed. Press Enter or q.",
-                    )?;
-                }
-                ApprovalDecision::Engage => {
-                    self.print_info("NOTE", "engage gesture is for compose-time; ignored here.")?;
-                }
-                ApprovalDecision::Clarify(_) => {
-                    self.print_info(
-                        "NOTE",
-                        "clarification is a v0.3 feature; press Enter to commit, q to cancel.",
-                    )?;
-                }
-                ApprovalDecision::Continue => {
-                    self.print_info(
-                        "NOTE",
-                        "unrecognized input; press Enter to commit, q to cancel.",
-                    )?;
-                }
-                // ApprovalDecision is #[non_exhaustive]; future variants
-                // route here as a no-op re-prompt.
-                _ => {
-                    self.print_info(
-                        "NOTE",
-                        "unsupported decision; press Enter to commit, q to cancel.",
-                    )?;
-                }
-            }
-        };
-
-        // 7. Render committed frame.
-        let frame = self.renderer.render_committed(&committed);
-        self.print_frame(&frame)?;
-
-        // 8. Journal commit.
-        self.journal
-            .append(&JournalRecord::committed(committed.clone()))?;
-        self.journal.flush()?;
+        let (committed, context) = self.compose_ratify_and_commit(composing, confidence, policy)?;
 
         // 9. Route + execute.
         let routed = dispatch(&committed, &context);
@@ -402,6 +344,211 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
         })
     }
 
+    /// Run an `agent.*` directive end-to-end via the supplied
+    /// [`ArcanExecutor`] (step #16).
+    ///
+    /// Same correction-loop machinery as [`Self::run_directive_lifecycle`]
+    /// up to the dispatch boundary, then routes via Arcan instead of
+    /// Praxis. The agent's response is rendered into a HUD frame and
+    /// recorded as `JournalRecord::AgentExecuted`.
+    ///
+    /// Arcan acts have no v0.2 reverse path: the agent is responsible
+    /// for its own undo recipe at completion-time. The post-execute
+    /// prompt simply lets the user acknowledge and exit.
+    pub fn run_directive_lifecycle_arcan(
+        &mut self,
+        composing: Directive<pneuma_core::Composing>,
+        confidence: Confidence,
+        policy: PolicyEnvelope,
+        arcan: &dyn ArcanExecutor,
+    ) -> Result<DemoSummary, DemoError> {
+        let (committed, context) = self.compose_ratify_and_commit(composing, confidence, policy)?;
+
+        // Route. Agent acts have ExecutorHint::Arcan, so we expect
+        // Dispatch::Arcan(prompt). Anything else surfaces as Refused.
+        let routed = dispatch(&committed, &context);
+        let prompt = match routed {
+            Dispatch::Arcan(p) => p,
+            Dispatch::Refuse(reason) => {
+                return Err(DemoError::Refused(format!("{reason:?}")));
+            }
+            other => {
+                return Err(DemoError::Refused(format!(
+                    "expected Arcan dispatch for agent act; got {other:?}"
+                )));
+            }
+        };
+
+        // Execute via the supplied ArcanExecutor.
+        let outcome = match arcan.execute(&prompt) {
+            Ok(o) => o,
+            Err(err) => {
+                let frame = self.renderer.render_info("AGENT ERROR", &format!("{err}"));
+                self.print_frame(&frame)?;
+                self.journal
+                    .append(&JournalRecord::failed(committed.id, format!("{err}")))?;
+                self.journal.flush()?;
+                return Err(DemoError::Arcan(err));
+            }
+        };
+
+        // Render + journal the agent's response.
+        let frame = self.renderer.render_arcan_outcome(
+            outcome.act_id.as_str(),
+            &outcome.executor,
+            &outcome.response,
+            outcome.exit_code,
+        );
+        self.print_frame(&frame)?;
+        self.journal.append(&JournalRecord::agent_executed(
+            committed.id,
+            &outcome.executor,
+            &outcome.response,
+            outcome.exit_code,
+        ))?;
+        self.journal.flush()?;
+
+        // Post-execute prompt — Arcan has no v0.2 reverse, so any
+        // terminal decision exits cleanly. The "exit-clean" arms and
+        // the non-exhaustive _ fallthrough are conceptually distinct
+        // even though all map to `break` in v0.2.
+        #[allow(clippy::match_same_arms)]
+        loop {
+            self.print_info(
+                "POST-EXECUTE",
+                "agent response recorded — [Enter / q] to exit",
+            )?;
+            match self.ratifier.read_decision() {
+                ApprovalDecision::Cancel
+                | ApprovalDecision::Reject
+                | ApprovalDecision::Commit
+                | ApprovalDecision::Approve => break,
+                ApprovalDecision::Undo => {
+                    self.print_info(
+                        "NOTE",
+                        "agent acts have no v0.2 reverse — the agent's response is recorded.",
+                    )?;
+                }
+                ApprovalDecision::Continue => {
+                    self.print_info("NOTE", "press Enter or q to exit.")?;
+                }
+                ApprovalDecision::Engage | ApprovalDecision::Clarify(_) => {
+                    self.print_info("NOTE", "no-op here; press Enter or q to exit.")?;
+                }
+                _ => break,
+            }
+        }
+
+        Ok(DemoSummary {
+            directive_id: committed.id,
+            // ArcanOutcome is structurally distinct from
+            // ExecutionOutcome; v0.2 leaves DemoSummary's Praxis-shaped
+            // outcome field as None for arcan flows. The journal carries
+            // the typed AgentExecuted record.
+            outcome: None,
+            reversed: false,
+            journal_path: self.config.journal_path.to_path_buf(),
+        })
+    }
+
+    /// Shared compose-ratify-commit-journal phase.
+    ///
+    /// Steps 1–8 of `run_directive_lifecycle*` — read context, render
+    /// composing, finalize, render ready, pre-commit prompt loop,
+    /// commit, render committed, journal commit. Returns the
+    /// committed directive plus the workspace context it was committed
+    /// against, so the caller can dispatch through the router.
+    fn compose_ratify_and_commit(
+        &mut self,
+        composing: Directive<pneuma_core::Composing>,
+        confidence: Confidence,
+        policy: PolicyEnvelope,
+    ) -> Result<(Directive<pneuma_core::Committed>, WorkspaceContext), DemoError> {
+        // 1. Substrate. Read from the observer.
+        let context: WorkspaceContext = self.observer.current();
+
+        // 2. Render composing.
+        let frame = self.renderer.render_composing(&composing);
+        self.print_frame(&frame)?;
+
+        // 3. Finalize.
+        let snapshot = context.snapshot();
+        let context_ref = ContextRef::new(
+            ContextSnapshotId::from_uuid(snapshot.id.into_inner()),
+            snapshot.taken_at.into_inner(),
+        );
+        let ready = match composing.try_finalize(context_ref, policy, confidence) {
+            Ok(r) => r,
+            Err((_, err)) => {
+                let frame = self.renderer.render_contract_error(&err);
+                self.print_frame(&frame)?;
+                return Err(err.into());
+            }
+        };
+
+        // 4. Render ready.
+        let frame = self.renderer.render_ready(&ready);
+        self.print_frame(&frame)?;
+
+        // 5. Pre-commit prompt loop.
+        let committed = loop {
+            self.print_pre_commit_prompt()?;
+            match self.ratifier.read_decision() {
+                ApprovalDecision::Commit | ApprovalDecision::Approve => match ready.commit() {
+                    Ok(c) => break c,
+                    Err((_returned_ready, err)) => {
+                        let frame = self.renderer.render_contract_error(&err);
+                        self.print_frame(&frame)?;
+                        return Err(err.into());
+                    }
+                },
+                ApprovalDecision::Cancel | ApprovalDecision::Reject => {
+                    self.journal_cancel(ready.id, "user cancelled at ready")?;
+                    self.print_info("CANCELLED", "directive discarded; nothing executed.")?;
+                    return Err(DemoError::Cancelled);
+                }
+                ApprovalDecision::Undo => {
+                    self.print_info(
+                        "NOTE",
+                        "nothing to undo yet — directive hasn't committed. Press Enter or q.",
+                    )?;
+                }
+                ApprovalDecision::Engage => {
+                    self.print_info("NOTE", "engage gesture is for compose-time; ignored here.")?;
+                }
+                ApprovalDecision::Clarify(_) => {
+                    self.print_info(
+                        "NOTE",
+                        "clarification is a v0.3 feature; press Enter to commit, q to cancel.",
+                    )?;
+                }
+                ApprovalDecision::Continue => {
+                    self.print_info(
+                        "NOTE",
+                        "unrecognized input; press Enter to commit, q to cancel.",
+                    )?;
+                }
+                _ => {
+                    self.print_info(
+                        "NOTE",
+                        "unsupported decision; press Enter to commit, q to cancel.",
+                    )?;
+                }
+            }
+        };
+
+        // 6. Render committed frame.
+        let frame = self.renderer.render_committed(&committed);
+        self.print_frame(&frame)?;
+
+        // 7. Journal commit.
+        self.journal
+            .append(&JournalRecord::committed(committed.clone()))?;
+        self.journal.flush()?;
+
+        Ok((committed, context))
+    }
+
     fn print_pre_commit_prompt(&mut self) -> Result<(), DemoError> {
         self.print_info(
             "RATIFY",
@@ -440,6 +587,15 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
             .into_iter()
             .find(|a| a.id.as_str() == "workspace.switch_app")
             .expect("workspace.switch_app canonical")
+    }
+
+    fn find_arcan_act(act_id: &str) -> Result<Act, DemoError> {
+        registry()
+            .into_iter()
+            .find(|a| a.id.as_str() == act_id)
+            .ok_or_else(|| {
+                DemoError::Refused(format!("agent act `{act_id}` is not in the registry"))
+            })
     }
 
     fn print_frame(&mut self, frame: &HudFrame) -> Result<(), DemoError> {
@@ -576,6 +732,73 @@ fn build_switch_app_directive(
 
     let utterance_text = utterance.map_or_else(|| format!("switch to {app_name}"), str::to_owned);
     Ok(directive.with_utterance(utterance_text))
+}
+
+fn build_arcan_directive(
+    act: Act,
+    instruction: &str,
+    payload_slots: Vec<(String, ResolvedSlotValue)>,
+) -> Directive<pneuma_core::Composing> {
+    // Inspect the act's required slot signatures so we can auto-bind
+    // an `instruction` slot (some agent acts — refactor, generate —
+    // declare it as a required String slot in addition to the
+    // directive's utterance field).
+    let needs_instruction_slot = act.slots.iter().any(|s| s.name == "instruction");
+
+    // payload_slots may already supply `target`; if `instruction`
+    // is required and not in payload_slots, fall back to `instruction`
+    // parameter.
+    let already_has_instruction = payload_slots.iter().any(|(n, _)| n == "instruction");
+
+    let resolved = ResolvedAct::empty(act);
+    let provenance = Provenance::new(Vec::new(), BindingKind::Deterministic, Utc::now());
+    let mut directive = Directive::new(SpeechAct::Directive, resolved);
+    for (name, value) in payload_slots {
+        directive = directive.bind_slot(
+            ResolvedSlot::new(&name, value, provenance.clone()).expect("slot is non-empty"),
+        );
+    }
+    if needs_instruction_slot && !already_has_instruction {
+        directive = directive.bind_slot(
+            ResolvedSlot::new(
+                "instruction",
+                ResolvedSlotValue::String(instruction.to_owned()),
+                provenance,
+            )
+            .expect("instruction slot is non-empty"),
+        );
+    }
+    // The directive's utterance carries the natural-language
+    // instruction. The Pneuma router's `dispatch` function pulls this
+    // into AgentPrompt::instruction so the agent CLI sees the
+    // user's actual ask.
+    directive.with_utterance(instruction.to_owned())
+}
+
+fn build_arcan_confidence(composing: &Directive<pneuma_core::Composing>) -> Confidence {
+    // Confidence is per-slot; agent acts have variable slot signatures.
+    // Build a 0.95 score for every bound slot so finalize() passes.
+    let entries: Vec<_> = composing
+        .act
+        .bindings
+        .iter()
+        .map(|s| {
+            (
+                s.name.clone(),
+                ConfidenceScore::new(0.95, true, ConfidenceProducer::Deterministic).unwrap(),
+            )
+        })
+        .collect();
+    if entries.is_empty() {
+        // No slots — Confidence::from_slots requires at least one
+        // entry. Synthesize a placeholder for the act itself.
+        return Confidence::from_slots(vec![(
+            "_act".to_owned(),
+            ConfidenceScore::new(0.95, true, ConfidenceProducer::Deterministic).unwrap(),
+        )])
+        .expect("placeholder confidence is constructible");
+    }
+    Confidence::from_slots(entries).expect("agent confidence is constructible")
 }
 
 fn build_switch_app_confidence() -> Confidence {

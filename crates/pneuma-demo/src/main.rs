@@ -1,6 +1,6 @@
 //! Binary entrypoint for the Tier 2 demo.
 //!
-//! Three flows after step #14 of MIL §11.2:
+//! Four flows after step #16b of MIL §11.2:
 //!
 //! - **Rename flow** (default and any `file.rename` utterance) — sets up
 //!   a tempdir with `old.txt`, runs the canonical rename loop, prompts
@@ -10,12 +10,24 @@
 //!   it actually opens Safari via AppleScript; on Linux/Windows the
 //!   executor surfaces a typed `PlatformUnsupported`.
 //! - **Switch-app flow** (any `workspace.switch_app` utterance) — runs
-//!   the correction loop for activating an app. Same macOS/AppleScript
-//!   pattern as navigate; differs only in slot kind (App vs URL).
+//!   the correction loop for activating an app.
+//! - **Arcan flow** (any `agent.refactor`, `agent.explain`,
+//!   `agent.review`, `agent.generate` utterance) — forwards the
+//!   directive's instruction to a Claude Code subprocess via the
+//!   `pneuma-arcan-bridge` `StdioCommandArcan::claude_code()` builder.
+//!   Surfaces the agent's response in a HUD frame and journals it as
+//!   `AgentExecuted`. Requires `claude` on PATH; use
+//!   `MIL_AGENT_COMMAND=...` to override.
 //!
 //! Dispatch is purely on the parsed act id — the demo binary itself
 //! does not know what an act *means*; it just routes to the right
 //! `Demo::run_*` flow. See `lib.rs` for the library surface.
+//!
+//! ## Environment variables
+//!
+//! - `MIL_UTTERANCE` — natural-language utterance (parsed deterministically).
+//! - `MIL_AGENT_COMMAND` — override the agent CLI command (default `claude`).
+//! - `MIL_AGENT_ARGS` — comma-separated args (default `--print`).
 //!
 //! ## Environment
 //!
@@ -31,6 +43,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use pneuma_acts::ActRegistry;
+use pneuma_arcan_bridge::StdioCommandArcan;
+use pneuma_core::act::ResolvedSlotValue;
+use pneuma_core::{FileRef, ReferentValue};
 use pneuma_demo::{Demo, DemoConfig, ParsedUtterance, manual_observer_for, parse_utterance};
 use pneuma_ratify::StdinRatifier;
 use sensorium_context::ManualObserver;
@@ -76,6 +91,11 @@ fn run() -> std::io::Result<()> {
             std::mem::forget(work_dir.guard);
             result
         }
+        Some(act) if act.starts_with("agent.") => {
+            let result = run_arcan_flow(parsed.expect("matched Some"), &journal_path);
+            std::mem::forget(work_dir.guard);
+            result
+        }
         Some("file.rename") | None => {
             let result = run_rename_flow(parsed, &work_dir.path, &journal_path);
             std::mem::forget(work_dir.guard);
@@ -83,7 +103,7 @@ fn run() -> std::io::Result<()> {
         }
         Some(other) => {
             eprintln!(
-                "demo: utterance resolved to act `{other}` — v0.2 demo handles file.rename, browser.navigate, and workspace.switch_app. Falling back to rename."
+                "demo: utterance resolved to act `{other}` — v0.2 demo handles file.rename, browser.navigate, workspace.switch_app, and agent.*. Falling back to rename."
             );
             let result = run_rename_flow(parsed, &work_dir.path, &journal_path);
             std::mem::forget(work_dir.guard);
@@ -252,6 +272,88 @@ fn run_switch_app_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io:
     let result = demo.run_switch_app(&app_name);
     drop(demo);
     print_summary(result, journal_path)
+}
+
+// --- Arcan flow ------------------------------------------------------------
+
+fn run_arcan_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io::Result<()> {
+    let act_id = parsed.act_id.as_str().to_owned();
+
+    // Promote parser-extracted slots into typed referents:
+    //
+    // - `target` that resolves to an existing file path → `File(FileRef)`
+    // - `target` that doesn't resolve to a file (free-form noun phrase
+    //   like "the auth module" or "MIL") → `Url(String)`. v0.2 uses
+    //   `Url` as a free-form string-shaped Referent; v0.3 will route
+    //   through `pneuma-resolver` for proper deictic / symbol
+    //   resolution.
+    // - Everything else → bare String slot.
+    let mut payload_slots: Vec<(String, ResolvedSlotValue)> = Vec::new();
+    for (name, value) in &parsed.payload_slots {
+        if name == "target" {
+            let typed = if std::path::Path::new(value).exists() {
+                ResolvedSlotValue::Referent(ReferentValue::File(FileRef::new(value)))
+            } else {
+                ResolvedSlotValue::Referent(ReferentValue::Url(value.clone()))
+            };
+            payload_slots.push((name.clone(), typed));
+        } else {
+            payload_slots.push((name.clone(), ResolvedSlotValue::String(value.clone())));
+        }
+    }
+
+    let arcan = build_arcan_executor_from_env();
+
+    println!("┌─ MIL Tier 2 demo · {act_id} ──────────────────────────────────────────");
+    println!("│ journal:     {}", journal_path.display());
+    println!("│ utterance:   {}", parsed.utterance);
+    println!("│ executor:    {}", arcan.executor_label());
+    println!(
+        "│ command:     {} {}",
+        arcan.command(),
+        arcan.args().join(" ")
+    );
+    println!("└──────────────────────────────────────────────────────────────────────────");
+    println!();
+    let _ = std::io::stdout().flush();
+
+    let config = DemoConfig {
+        source_path: Path::new(""),
+        new_name: "",
+        journal_path,
+        hud_width: 80,
+        utterance: Some(&parsed.utterance),
+    };
+    let stdout = std::io::stdout();
+    let handle = stdout.lock();
+    let ratifier = StdinRatifier {
+        prompt: String::new(),
+    };
+    let observer = Box::new(ManualObserver::new(Timestamp::now()));
+    let mut demo = Demo::new(config, handle, ratifier, observer)
+        .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
+
+    let result = demo.run_arcan(&act_id, &parsed.utterance, payload_slots, &arcan);
+    drop(demo);
+    print_summary(result, journal_path)
+}
+
+/// Build a `StdioCommandArcan` from environment variables, falling back
+/// to the Claude Code default. `MIL_AGENT_COMMAND` overrides the binary
+/// name; `MIL_AGENT_ARGS` provides comma-separated arguments.
+fn build_arcan_executor_from_env() -> StdioCommandArcan {
+    let cmd = std::env::var("MIL_AGENT_COMMAND").ok();
+    let args = std::env::var("MIL_AGENT_ARGS").ok();
+    match (cmd, args) {
+        (Some(c), Some(a)) => StdioCommandArcan::new(c, a.split(',').map(str::trim), "custom"),
+        (Some(c), None) => StdioCommandArcan::new(c, Vec::<String>::new(), "custom"),
+        (None, Some(a)) => StdioCommandArcan::new(
+            "claude",
+            a.split(',').map(str::trim),
+            "claude-code-customargs",
+        ),
+        (None, None) => StdioCommandArcan::claude_code(),
+    }
 }
 
 // --- Shared output ---------------------------------------------------------

@@ -136,6 +136,30 @@ pub enum JournalRecord {
         /// Error message.
         error: String,
     },
+    /// An Arcan (agent-runtime) execution succeeded.
+    ///
+    /// Distinct variant from [`Self::Executed`] because the two paths
+    /// produce structurally different outcomes:
+    /// - `Executed` carries an [`ExecutionOutcome`] (Praxis path —
+    ///   typed result + reverse action).
+    /// - `AgentExecuted` carries the agent's response text + the
+    ///   executor label so different harnesses are distinguishable
+    ///   when the same intent is replayed across them.
+    AgentExecuted {
+        /// Record identifier.
+        record_id: Uuid,
+        /// When written.
+        at: DateTime<Utc>,
+        /// Which directive this execution was for.
+        directive_id: DirectiveId,
+        /// Which executor ran the prompt (e.g. `"claude-code"`,
+        /// `"codex"`, `"mock"`).
+        executor: String,
+        /// The agent's response text, captured from subprocess stdout.
+        response: String,
+        /// Subprocess exit code (0 on success).
+        exit_code: i32,
+    },
 }
 
 impl JournalRecord {
@@ -193,6 +217,24 @@ impl JournalRecord {
         }
     }
 
+    /// Construct an `AgentExecuted` record stamped now.
+    #[must_use]
+    pub fn agent_executed(
+        directive_id: DirectiveId,
+        executor: impl Into<String>,
+        response: impl Into<String>,
+        exit_code: i32,
+    ) -> Self {
+        Self::AgentExecuted {
+            record_id: Uuid::now_v7(),
+            at: Utc::now(),
+            directive_id,
+            executor: executor.into(),
+            response: response.into(),
+            exit_code,
+        }
+    }
+
     /// The record's identifier, regardless of variant.
     #[must_use]
     pub fn record_id(&self) -> Uuid {
@@ -201,7 +243,8 @@ impl JournalRecord {
             | Self::Executed { record_id, .. }
             | Self::Reversed { record_id, .. }
             | Self::Cancelled { record_id, .. }
-            | Self::Failed { record_id, .. } => *record_id,
+            | Self::Failed { record_id, .. }
+            | Self::AgentExecuted { record_id, .. } => *record_id,
         }
     }
 
@@ -213,7 +256,8 @@ impl JournalRecord {
             Self::Executed { directive_id, .. }
             | Self::Reversed { directive_id, .. }
             | Self::Cancelled { directive_id, .. }
-            | Self::Failed { directive_id, .. } => *directive_id,
+            | Self::Failed { directive_id, .. }
+            | Self::AgentExecuted { directive_id, .. } => *directive_id,
         }
     }
 }
