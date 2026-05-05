@@ -17,10 +17,9 @@ its afterlife.**
 | [`pneuma-lago-bridge`](crates/pneuma-lago-bridge) | Append-only NDJSON journal — `JournalRecord::{Committed, Executed, Reversed, Cancelled, Failed}`. | 8 |
 | [`pneuma-hud`](crates/pneuma-hud) | Pure rendering — every directive state + outcomes + errors → ASCII frames. | 14 |
 | [`pneuma-ratify`](crates/pneuma-ratify) | Approval-channel FSM — `ApprovalDecision`, `Ratifier` trait, `StdinRatifier`, `MockRatifier`. | 15 |
-| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser. | 26 |
+| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; both rename and navigate flows. | 30 + 2 ignored |
 
-**Total tests:** 160 · all green on `cargo test --workspace`. All clippy-clean
-under `-D warnings + pedantic`.
+**Total tests:** 181 · 2 ignored (macOS interactive) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
 
 Path-deps `sensorium-context` (sibling repo at `../sensorium`) so the same
 CI matrix applies. See [`MIL-PROJECT.md`](../../MIL-PROJECT.md) §10 for the
@@ -37,26 +36,41 @@ Claude Code / Cursor / Codex stdio interface), `pneuma-predication-model`
 
 ```sh
 $ cargo run -p pneuma-demo
-# Walks the demo on a tempdir file with default new_name="new.txt"
+# Default: walks the rename demo on a tempdir file (new_name="new.txt")
 
 $ MIL_UTTERANCE='rename to bar.txt' cargo run -p pneuma-demo
 # Parses the utterance; new_name comes from "to bar.txt"
 
 $ MIL_UTTERANCE='rn report.md' cargo run -p pneuma-demo
 # Terse alias form; "rn" resolves to file.rename
+
+$ MIL_UTTERANCE='navigate to https://example.com' cargo run -p pneuma-demo
+# macOS only: opens the URL in Safari and prompts for undo
+# Linux/Windows: surfaces typed PlatformUnsupported
+
+$ MIL_UTTERANCE='go example.com' cargo run -p pneuma-demo
+# Same; "go" / "browse" are aliases for browser.navigate
 ```
 
 The user presses Enter to commit, `u` to undo, `q` to cancel. Journal is
 preserved at the printed tempdir path on every exit. Every run leaves a
 reproducible trace.
 
+The browser-navigate flow opens Safari real on macOS via AppleScript;
+on Linux/Windows the executor surfaces a typed
+`PraxisError::PlatformUnsupported` and the demo records a `Failed`
+journal entry — the contract chain is identical, only the platform
+gate differs. See
+[`docs/mil/router-and-harness.md`](../../docs/mil/router-and-harness.md)
+for the architectural argument.
+
 ## What you cannot do yet
 
-- Talk to a real OS app (browser, terminal, Claude Code window)
-- Use voice input
-- Reference deictics ("this", "that")
+- Use voice input (step #17, design references in `superwhisper-voice-ecosystem` entity)
+- Reference deictics ("this", "that") (step #18, blocked on step #15)
+- Address a specific Claude Code window (step #15 + #16 + #18)
 - Run on real files outside a tempdir (no permission gates)
-- Address a specific Claude Code window
+- Multi-browser navigate (v0.2 is Safari-only; `RestoreUrl.browser: String` is future-proofed)
 
 See [`docs/mil/router-and-harness.md`](../../docs/mil/router-and-harness.md)
 for *why the architecture supports all of this even though none of it is
@@ -66,9 +80,12 @@ Cursor, Arcan internal) are downstream of `Dispatch::Arcan(AgentPrompt)`.
 ## Status
 
 v0.2.0 — Tier 2 (single-act demo) complete, Phase 1.1 (real Observer)
-complete, Phase 2.1 (deterministic parser) complete. Tier 3 — the
-empirical milestone — requires step #13 (one real OS-control act, e.g.
-`browser.navigate` via AppleScript, ~200 LoC) before it can start.
+complete, Phase 2.1 (deterministic parser) complete, **step #13
+(`browser.navigate` Praxis act + demo flow) complete**. Tier 3 — the
+empirical milestone where a human user runs a full work session and we
+measure the bandwidth-reframe metric — is now runnable on macOS for
+the rename and navigate flows. Next steps: #14 (app focus / launch),
+#15 (`sensorium-context-macos`), #16 (Arcan bridge stdio).
 
 ## Cross-references
 

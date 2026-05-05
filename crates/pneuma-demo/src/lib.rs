@@ -136,46 +136,82 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
 
     /// Run the canonical "rename the focused file" demo end-to-end.
     ///
-    /// Steps:
-    ///
-    /// 1. Build a workspace context.
-    /// 2. Compose a `file.rename` directive.
-    /// 3. Render the composing frame.
-    /// 4. Finalize → `Ready`.
-    /// 5. Render the ready frame.
-    /// 6. Read approval decision.
-    ///    - `Commit` → commit + execute + journal + render outcome.
-    ///    - `Cancel` → return `Cancelled`.
-    /// 7. After execute: read approval decision.
-    ///    - `Undo` → reverse + journal.
-    ///    - any other terminal → exit gracefully.
-    ///
-    /// Returns the [`DemoSummary`] on the happy path so callers /
-    /// tests can inspect what happened.
+    /// Thin wrapper over [`Self::run_directive_lifecycle`] that supplies
+    /// the rename-specific directive, confidence, and policy.
+    /// See [`Self::run_directive_lifecycle`] for the full lifecycle.
     pub fn run_rename(&mut self) -> Result<DemoSummary, DemoError> {
-        // 1. Substrate. Read from the observer (`sensorium-context`)
-        //    instead of hand-building. The producer-side state — what
-        //    file is focused, what's in the activity ring — is the
-        //    observer's job. The demo just queries.
-        let context: WorkspaceContext = self.observer.current();
-
-        // 2. Compose directive.
         let act = Self::find_rename_act();
         let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
-
         let composing = build_rename_directive(
             act,
             self.config.source_path,
             self.config.new_name,
             self.config.utterance,
         );
+        let confidence = build_rename_confidence();
+        self.run_directive_lifecycle(composing, confidence, policy)
+    }
 
-        // 3. Render composing.
+    /// Run a `browser.navigate` directive end-to-end.
+    ///
+    /// Same correction-loop machinery as [`Self::run_rename`] — composes,
+    /// finalizes, prompts, commits, dispatches via the router, executes
+    /// against [`LocalPraxis`], journals, optionally reverses. The
+    /// difference is the directive shape: `browser.navigate` carries a
+    /// `Referent::Url` slot, no `target` file, no tempfile setup. On
+    /// non-macOS platforms execution surfaces
+    /// [`PraxisError::PlatformUnsupported`][unsup]; the demo still walks
+    /// the contract chain up to that point.
+    ///
+    /// `url` is the destination URL — the parser produces it, the
+    /// caller supplies it. v0.2 trusts the caller; future versions will
+    /// validate via `url::Url::parse`.
+    ///
+    /// [unsup]: pneuma_praxis_bridge::PraxisError::PlatformUnsupported
+    pub fn run_navigate(&mut self, url: &str) -> Result<DemoSummary, DemoError> {
+        let act = Self::find_navigate_act();
+        let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
+        let composing = build_navigate_directive(act, url, self.config.utterance);
+        let confidence = build_navigate_confidence();
+        self.run_directive_lifecycle(composing, confidence, policy)
+    }
+
+    /// The act-agnostic correction-loop driver shared by every
+    /// `run_*` variant.
+    ///
+    /// Steps:
+    ///
+    /// 1. Build a workspace context.
+    /// 2. Render the composing frame for the supplied directive.
+    /// 3. Finalize → `Ready`.
+    /// 4. Render the ready frame.
+    /// 5. Pre-commit prompt loop.
+    ///    - `Commit` → commit + execute + journal + render outcome.
+    ///    - `Cancel` → return `Cancelled`.
+    /// 6. Post-execute prompt loop.
+    ///    - `Undo` → reverse + journal.
+    ///    - any other terminal → exit gracefully.
+    ///
+    /// The caller supplies a fully-composed [`Directive`], its slot
+    /// confidences, and its policy envelope. Everything downstream
+    /// (HUD frames, journal records, ratify prompts) is act-agnostic.
+    pub fn run_directive_lifecycle(
+        &mut self,
+        composing: Directive<pneuma_core::Composing>,
+        confidence: Confidence,
+        policy: PolicyEnvelope,
+    ) -> Result<DemoSummary, DemoError> {
+        // 1. Substrate. Read from the observer (`sensorium-context`)
+        //    instead of hand-building. The producer-side state — what
+        //    file is focused, what's in the activity ring — is the
+        //    observer's job. The demo just queries.
+        let context: WorkspaceContext = self.observer.current();
+
+        // 2 (was 3). Render composing.
         let frame = self.renderer.render_composing(&composing);
         self.print_frame(&frame)?;
 
-        // 4. Finalize.
-        let confidence = build_confidence();
+        // 3. Finalize.
         let snapshot = context.snapshot();
         let context_ref = ContextRef::new(
             ContextSnapshotId::from_uuid(snapshot.id.into_inner()),
@@ -370,6 +406,13 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
             .expect("file.rename canonical")
     }
 
+    fn find_navigate_act() -> Act {
+        registry()
+            .into_iter()
+            .find(|a| a.id.as_str() == "browser.navigate")
+            .expect("browser.navigate canonical")
+    }
+
     fn print_frame(&mut self, frame: &HudFrame) -> Result<(), DemoError> {
         writeln!(self.out, "{}", frame.body)
             .map_err(|e| DemoError::Journal(pneuma_lago_bridge::JournalError::Io(e)))?;
@@ -441,7 +484,7 @@ fn build_rename_directive(
     directive.with_utterance(utterance_text)
 }
 
-fn build_confidence() -> Confidence {
+fn build_rename_confidence() -> Confidence {
     Confidence::from_slots(vec![
         (
             "target".to_owned(),
@@ -452,6 +495,36 @@ fn build_confidence() -> Confidence {
             ConfidenceScore::new(0.95, true, ConfidenceProducer::Deterministic).unwrap(),
         ),
     ])
+    .expect("confidence is constructible")
+}
+
+fn build_navigate_directive(
+    act: Act,
+    url: &str,
+    utterance: Option<&str>,
+) -> Directive<pneuma_core::Composing> {
+    let resolved = ResolvedAct::empty(act);
+    let provenance = Provenance::new(Vec::new(), BindingKind::Deterministic, Utc::now());
+    let directive = Directive::new(SpeechAct::Directive, resolved).bind_slot(
+        ResolvedSlot::new(
+            "url",
+            ResolvedSlotValue::Referent(ReferentValue::Url(url.to_owned())),
+            provenance,
+        )
+        .expect("slot is non-empty"),
+    );
+
+    // Attach a parsed utterance verbatim if supplied; otherwise
+    // synthesize a canonical-form utterance for diagnostics.
+    let utterance_text = utterance.map_or_else(|| format!("navigate to {url}"), str::to_owned);
+    directive.with_utterance(utterance_text)
+}
+
+fn build_navigate_confidence() -> Confidence {
+    Confidence::from_slots(vec![(
+        "url".to_owned(),
+        ConfidenceScore::new(0.95, true, ConfidenceProducer::Deterministic).unwrap(),
+    )])
     .expect("confidence is constructible")
 }
 

@@ -1,22 +1,38 @@
 //! Binary entrypoint for the Tier 2 demo.
 //!
-//! Sets up a tempdir, writes `old.txt`, runs the rename demo, prints
-//! HUD frames to stdout, prompts the user at the approval steps via
-//! stdin.
+//! Two flows after step #13 of MIL §11.2:
 //!
-//! See `lib.rs` for the library surface — integration tests drive the
-//! same flow with a [`pneuma_ratify::MockRatifier`].
+//! - **Rename flow** (default and any `file.rename` utterance) — sets up
+//!   a tempdir with `old.txt`, runs the canonical rename loop, prompts
+//!   the user via stdin.
+//! - **Navigate flow** (any `browser.navigate` utterance) — runs the
+//!   correction loop for navigating the frontmost browser tab. Tempdir
+//!   is created only for the journal; no fixture file. On macOS it
+//!   actually opens Safari via AppleScript; on Linux/Windows the
+//!   executor surfaces a typed `PlatformUnsupported`.
+//!
+//! Dispatch is purely on the parsed act id — the demo binary itself
+//! does not know what an act *means*; it just routes to the right
+//! `Demo::run_*` flow. See `lib.rs` for the library surface.
+//!
+//! ## Environment
+//!
+//! - `MIL_UTTERANCE` — optional natural-language utterance. When unset
+//!   or empty, defaults to the canonical rename flow (rename `old.txt`
+//!   to `new.txt`).
 
 #![allow(clippy::print_stderr, clippy::print_stdout)] // demo binary
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use pneuma_acts::ActRegistry;
-use pneuma_demo::{Demo, DemoConfig, manual_observer_for, parse_utterance};
+use pneuma_demo::{Demo, DemoConfig, ParsedUtterance, manual_observer_for, parse_utterance};
 use pneuma_ratify::StdinRatifier;
+use sensorium_context::ManualObserver;
+use sensorium_core::Timestamp;
 
 fn main() -> ExitCode {
     match run() {
@@ -29,49 +45,79 @@ fn main() -> ExitCode {
 }
 
 fn run() -> std::io::Result<()> {
-    // Set up a tempdir with a file to rename.
-    let work_dir = tempdir_with_fixture()?;
-    let source_path = work_dir.path.join("old.txt");
-    fs::write(&source_path, "alpha")?;
+    let work_dir = tempdir_for_journal()?;
     let journal_path = work_dir.path.join("demo.journal.ndjson");
 
-    // Phase 2.1: optional natural-language utterance via env var.
-    // Default phrasing matches the canonical demo when MIL_UTTERANCE
-    // is unset.
+    // Parse `MIL_UTTERANCE` upfront so we know which flow to run.
     let utterance_env = std::env::var("MIL_UTTERANCE").ok();
     let registry = ActRegistry::canonical();
-    let (new_name, utterance_for_directive) = match utterance_env.as_deref() {
-        Some(s) if !s.trim().is_empty() => match parse_utterance(s, &registry) {
-            Ok(parsed) if parsed.act_id.as_str() == "file.rename" => {
-                let nn = parsed
-                    .payload_slots
-                    .iter()
-                    .find(|(k, _)| k == "new_name")
-                    .map(|(_, v)| v.clone());
-                if let Some(name) = nn {
-                    (name, Some(parsed.utterance))
-                } else {
-                    eprintln!("demo: utterance parsed but no new_name extracted; using default");
-                    ("new.txt".to_owned(), Some(parsed.utterance))
-                }
-            }
-            Ok(parsed) => {
-                eprintln!(
-                    "demo: utterance resolved to act `{}` but the demo only handles file.rename in v0.2; using default new_name",
-                    parsed.act_id.as_str()
-                );
-                ("new.txt".to_owned(), Some(parsed.utterance))
-            }
+    let parsed = utterance_env
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| match parse_utterance(s, &registry) {
+            Ok(p) => Some(p),
             Err(err) => {
-                eprintln!("demo: could not parse MIL_UTTERANCE ({err}); using default");
-                ("new.txt".to_owned(), Some(s.to_owned()))
+                eprintln!("demo: could not parse MIL_UTTERANCE ({err}); using default flow");
+                None
             }
-        },
-        _ => ("new.txt".to_owned(), None),
+        });
+
+    // Branch on the parsed act id.
+    match parsed.as_ref().map(|p| p.act_id.as_str()) {
+        Some("browser.navigate") => {
+            let result = run_navigate_flow(parsed.expect("matched Some"), &journal_path);
+            std::mem::forget(work_dir.guard);
+            result
+        }
+        Some("file.rename") | None => {
+            let result = run_rename_flow(parsed, &work_dir.path, &journal_path);
+            std::mem::forget(work_dir.guard);
+            result
+        }
+        Some(other) => {
+            eprintln!(
+                "demo: utterance resolved to act `{other}` — v0.2 demo only ships file.rename and browser.navigate flows. Falling back to rename."
+            );
+            let result = run_rename_flow(parsed, &work_dir.path, &journal_path);
+            std::mem::forget(work_dir.guard);
+            result
+        }
+    }
+}
+
+// --- Rename flow -----------------------------------------------------------
+
+fn run_rename_flow(
+    parsed: Option<ParsedUtterance>,
+    work_dir: &Path,
+    journal_path: &Path,
+) -> std::io::Result<()> {
+    let source_path = work_dir.join("old.txt");
+    fs::write(&source_path, "alpha")?;
+
+    // Extract `new_name` from the parsed utterance if it was a rename;
+    // otherwise default. (Other parsed acts that fell through to rename
+    // — e.g. unsupported v0.2 acts — keep the default.)
+    let (new_name, utterance_for_directive) = match parsed {
+        Some(p) if p.act_id.as_str() == "file.rename" => {
+            let nn = p
+                .payload_slots
+                .iter()
+                .find(|(k, _)| k == "new_name")
+                .map(|(_, v)| v.clone());
+            if let Some(name) = nn {
+                (name, Some(p.utterance))
+            } else {
+                eprintln!("demo: utterance parsed but no new_name extracted; using default");
+                ("new.txt".to_owned(), Some(p.utterance))
+            }
+        }
+        Some(p) => ("new.txt".to_owned(), Some(p.utterance)),
+        None => ("new.txt".to_owned(), None),
     };
 
-    println!("┌─ MIL Tier 2 demo ───────────────────────────────────────────────────────");
-    println!("│ workdir:     {}", work_dir.path.display());
+    println!("┌─ MIL Tier 2 demo · file.rename ─────────────────────────────────────────");
+    println!("│ workdir:     {}", work_dir.display());
     println!("│ source:      {}", source_path.display());
     println!("│ journal:     {}", journal_path.display());
     if let Some(u) = utterance_for_directive.as_deref() {
@@ -85,33 +131,82 @@ fn run() -> std::io::Result<()> {
     let config = DemoConfig {
         source_path: &source_path,
         new_name: &new_name,
-        journal_path: &journal_path,
+        journal_path,
         hud_width: 80,
         utterance: utterance_for_directive.as_deref(),
     };
     let stdout = std::io::stdout();
     let handle = stdout.lock();
-    // Silent StdinRatifier: the demo prints its own context-specific
-    // prompts so the StdinRatifier should not echo a competing one.
     let ratifier = StdinRatifier {
         prompt: String::new(),
     };
-    // Build a ManualObserver pre-populated with the focused file.
-    // The real producer model: a sensorium-context observer feeds
-    // the substrate; pneuma-router queries when it needs context.
     let observer = Box::new(manual_observer_for(&source_path));
     let mut demo = Demo::new(config, handle, ratifier, observer)
         .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
 
     let result = demo.run_rename();
-    // Drop the demo before printing summaries so the journal flushes.
     drop(demo);
+    print_summary(result, journal_path)
+}
 
-    // Always preserve the tempdir so the user can inspect the journal,
-    // even on cancel / failure. (UX finding #3 from the user review.)
-    let journal_path_for_summary = journal_path.clone();
-    std::mem::forget(work_dir.guard);
+// --- Navigate flow ---------------------------------------------------------
 
+fn run_navigate_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io::Result<()> {
+    // The parser put a single `url` slot in the payload.
+    let url = parsed
+        .payload_slots
+        .iter()
+        .find(|(k, _)| k == "url")
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| {
+            std::io::Error::other("parser produced no `url` slot for browser.navigate")
+        })?;
+
+    println!("┌─ MIL Tier 2 demo · browser.navigate ────────────────────────────────────");
+    println!("│ journal:     {}", journal_path.display());
+    println!("│ utterance:   {}", parsed.utterance);
+    println!("│ proposed →   navigate Safari front tab to {url}");
+    if !cfg!(target_os = "macos") {
+        println!(
+            "│ note:        non-macOS host detected — execution will surface PlatformUnsupported"
+        );
+    }
+    println!("└──────────────────────────────────────────────────────────────────────────");
+    println!();
+    let _ = std::io::stdout().flush();
+
+    // Navigate flow doesn't need a focused file in the workspace
+    // observer — the URL is the slot binding. Use a fresh
+    // ManualObserver as the substrate.
+    let config = DemoConfig {
+        // `source_path` is rename-specific; pass an empty PathBuf.
+        // The navigate flow doesn't read it.
+        source_path: Path::new(""),
+        new_name: "",
+        journal_path,
+        hud_width: 80,
+        utterance: Some(&parsed.utterance),
+    };
+    let stdout = std::io::stdout();
+    let handle = stdout.lock();
+    let ratifier = StdinRatifier {
+        prompt: String::new(),
+    };
+    let observer = Box::new(ManualObserver::new(Timestamp::now()));
+    let mut demo = Demo::new(config, handle, ratifier, observer)
+        .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
+
+    let result = demo.run_navigate(&url);
+    drop(demo);
+    print_summary(result, journal_path)
+}
+
+// --- Shared output ---------------------------------------------------------
+
+fn print_summary(
+    result: Result<pneuma_demo::DemoSummary, pneuma_demo::DemoError>,
+    journal_path: &Path,
+) -> std::io::Result<()> {
     match result {
         Ok(summary) => {
             println!();
@@ -126,7 +221,7 @@ fn run() -> std::io::Result<()> {
             println!();
             println!("┌─ summary ─");
             println!("│ status:  cancelled");
-            println!("│ journal: {}", journal_path_for_summary.display());
+            println!("│ journal: {}", journal_path.display());
             println!("└──");
             Ok(())
         }
@@ -134,12 +229,14 @@ fn run() -> std::io::Result<()> {
     }
 }
 
+// --- Tempdir helper ---------------------------------------------------------
+
 struct DirAndGuard {
     path: PathBuf,
     guard: tempfile::TempDir,
 }
 
-fn tempdir_with_fixture() -> std::io::Result<DirAndGuard> {
+fn tempdir_for_journal() -> std::io::Result<DirAndGuard> {
     let guard = tempfile::tempdir()?;
     let path = guard.path().to_path_buf();
     Ok(DirAndGuard { path, guard })
