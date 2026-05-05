@@ -17,9 +17,9 @@ its afterlife.**
 | [`pneuma-lago-bridge`](crates/pneuma-lago-bridge) | Append-only NDJSON journal — `JournalRecord::{Committed, Executed, Reversed, Cancelled, Failed}`. | 8 |
 | [`pneuma-hud`](crates/pneuma-hud) | Pure rendering — every directive state + outcomes + errors → ASCII frames. | 14 |
 | [`pneuma-ratify`](crates/pneuma-ratify) | Approval-channel FSM — `ApprovalDecision`, `Ratifier` trait, `StdinRatifier`, `MockRatifier`. | 15 |
-| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; both rename and navigate flows. | 30 + 2 ignored |
+| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; rename, navigate, and switch-app flows. | 35 + 3 ignored |
 
-**Total tests:** 181 · 2 ignored (macOS interactive) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
+**Total tests:** 191 · 4 ignored (macOS interactive) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
 
 Path-deps `sensorium-context` (sibling repo at `../sensorium`) so the same
 CI matrix applies. See [`MIL-PROJECT.md`](../../MIL-PROJECT.md) §10 for the
@@ -50,6 +50,13 @@ $ MIL_UTTERANCE='navigate to https://example.com' cargo run -p pneuma-demo
 
 $ MIL_UTTERANCE='go example.com' cargo run -p pneuma-demo
 # Same; "go" / "browse" are aliases for browser.navigate
+
+$ MIL_UTTERANCE='switch to Safari' cargo run -p pneuma-demo
+# macOS only: activates Safari (or any registered app); no undo
+# Linux/Windows: surfaces typed PlatformUnsupported
+
+$ MIL_UTTERANCE='switch Visual Studio Code' cargo run -p pneuma-demo
+# Multi-word app names work
 ```
 
 The user presses Enter to commit, `u` to undo, `q` to cancel. Journal is
@@ -81,11 +88,12 @@ Cursor, Arcan internal) are downstream of `Dispatch::Arcan(AgentPrompt)`.
 
 v0.2.0 — Tier 2 (single-act demo) complete, Phase 1.1 (real Observer)
 complete, Phase 2.1 (deterministic parser) complete, **step #13
-(`browser.navigate` Praxis act + demo flow) complete**. Tier 3 — the
-empirical milestone where a human user runs a full work session and we
-measure the bandwidth-reframe metric — is now runnable on macOS for
-the rename and navigate flows. Next steps: #14 (app focus / launch),
-#15 (`sensorium-context-macos`), #16 (Arcan bridge stdio).
+(`browser.navigate`) and step #14 (`workspace.switch_app`) Praxis acts
++ demo flows complete**. Tier 3 — the empirical milestone where a human
+user runs a full work session and we measure the bandwidth-reframe
+metric — is now runnable on macOS for rename, navigate, and switch-app
+flows. Next steps: #15 (`sensorium-context-macos`), #16 (Arcan bridge
+stdio), #17 (sensorium-voice).
 
 ## Cross-references
 

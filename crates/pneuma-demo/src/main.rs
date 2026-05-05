@@ -1,15 +1,17 @@
 //! Binary entrypoint for the Tier 2 demo.
 //!
-//! Two flows after step #13 of MIL §11.2:
+//! Three flows after step #14 of MIL §11.2:
 //!
 //! - **Rename flow** (default and any `file.rename` utterance) — sets up
 //!   a tempdir with `old.txt`, runs the canonical rename loop, prompts
 //!   the user via stdin.
 //! - **Navigate flow** (any `browser.navigate` utterance) — runs the
-//!   correction loop for navigating the frontmost browser tab. Tempdir
-//!   is created only for the journal; no fixture file. On macOS it
-//!   actually opens Safari via AppleScript; on Linux/Windows the
+//!   correction loop for navigating the frontmost browser tab. On macOS
+//!   it actually opens Safari via AppleScript; on Linux/Windows the
 //!   executor surfaces a typed `PlatformUnsupported`.
+//! - **Switch-app flow** (any `workspace.switch_app` utterance) — runs
+//!   the correction loop for activating an app. Same macOS/AppleScript
+//!   pattern as navigate; differs only in slot kind (App vs URL).
 //!
 //! Dispatch is purely on the parsed act id — the demo binary itself
 //! does not know what an act *means*; it just routes to the right
@@ -69,6 +71,11 @@ fn run() -> std::io::Result<()> {
             std::mem::forget(work_dir.guard);
             result
         }
+        Some("workspace.switch_app") => {
+            let result = run_switch_app_flow(parsed.expect("matched Some"), &journal_path);
+            std::mem::forget(work_dir.guard);
+            result
+        }
         Some("file.rename") | None => {
             let result = run_rename_flow(parsed, &work_dir.path, &journal_path);
             std::mem::forget(work_dir.guard);
@@ -76,7 +83,7 @@ fn run() -> std::io::Result<()> {
         }
         Some(other) => {
             eprintln!(
-                "demo: utterance resolved to act `{other}` — v0.2 demo only ships file.rename and browser.navigate flows. Falling back to rename."
+                "demo: utterance resolved to act `{other}` — v0.2 demo handles file.rename, browser.navigate, and workspace.switch_app. Falling back to rename."
             );
             let result = run_rename_flow(parsed, &work_dir.path, &journal_path);
             std::mem::forget(work_dir.guard);
@@ -197,6 +204,52 @@ fn run_navigate_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io::R
         .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
 
     let result = demo.run_navigate(&url);
+    drop(demo);
+    print_summary(result, journal_path)
+}
+
+// --- Switch-app flow -------------------------------------------------------
+
+fn run_switch_app_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io::Result<()> {
+    let app_name = parsed
+        .payload_slots
+        .iter()
+        .find(|(k, _)| k == "target")
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| {
+            std::io::Error::other("parser produced no `target` slot for workspace.switch_app")
+        })?;
+
+    println!("┌─ MIL Tier 2 demo · workspace.switch_app ────────────────────────────────");
+    println!("│ journal:     {}", journal_path.display());
+    println!("│ utterance:   {}", parsed.utterance);
+    println!("│ proposed →   activate macOS application: {app_name}");
+    if !cfg!(target_os = "macos") {
+        println!(
+            "│ note:        non-macOS host detected — execution will surface PlatformUnsupported"
+        );
+    }
+    println!("└──────────────────────────────────────────────────────────────────────────");
+    println!();
+    let _ = std::io::stdout().flush();
+
+    let config = DemoConfig {
+        source_path: Path::new(""),
+        new_name: "",
+        journal_path,
+        hud_width: 80,
+        utterance: Some(&parsed.utterance),
+    };
+    let stdout = std::io::stdout();
+    let handle = stdout.lock();
+    let ratifier = StdinRatifier {
+        prompt: String::new(),
+    };
+    let observer = Box::new(ManualObserver::new(Timestamp::now()));
+    let mut demo = Demo::new(config, handle, ratifier, observer)
+        .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
+
+    let result = demo.run_switch_app(&app_name);
     drop(demo);
     print_summary(result, journal_path)
 }

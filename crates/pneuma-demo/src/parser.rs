@@ -19,6 +19,7 @@
 //! - `"open"` / `"open it"`
 //! - `"read"` / `"show"`
 //! - `"navigate to URL"` / `"go to URL"` / `"browse URL"` / `"go URL"`
+//! - `"switch to APP"` / `"switch APP"` (multi-word app names supported)
 //!
 //! The verb is looked up via [`pneuma_acts::ActRegistry::lookup_by_verb`];
 //! arguments are extracted by simple word splitting around `to`. The
@@ -138,6 +139,7 @@ fn extract_payload_slots(
         "file.rename" => extract_rename_slots(tokens, utterance),
         "file.copy" | "file.move" => extract_to_destination_slots(tokens, utterance, act_id),
         "browser.navigate" => extract_navigate_slots(tokens, utterance),
+        "workspace.switch_app" => extract_switch_app_slots(tokens, utterance),
         // Acts with no payload slots in v0.2:
         "file.read"
         | "file.open"
@@ -251,6 +253,40 @@ fn extract_navigate_slots(
         return Err(missing());
     }
     Ok(vec![("url".to_owned(), url_words.join(" "))])
+}
+
+/// Extract `target` (app name) from "switch [to] APP" / "switch APP".
+///
+/// Multi-word app names work: "switch to Visual Studio Code" yields
+/// `("target", "Visual Studio Code")`. Filler words are stripped if
+/// no `to` keyword is present.
+fn extract_switch_app_slots(
+    tokens: &[&str],
+    utterance: &str,
+) -> Result<Vec<(String, String)>, ParseError> {
+    let missing = || ParseError::MissingSlot {
+        act_id: "workspace.switch_app".to_owned(),
+        slot: "target".to_owned(),
+        utterance: utterance.to_owned(),
+    };
+    let app_words: Vec<String> = if let Some(idx) = position_lower(tokens, "to") {
+        tokens
+            .iter()
+            .skip(idx + 1)
+            .map(|t| (*t).to_string())
+            .collect()
+    } else {
+        tokens
+            .iter()
+            .copied()
+            .filter(|t| !is_filler_word(t))
+            .map(str::to_string)
+            .collect()
+    };
+    if app_words.is_empty() {
+        return Err(missing());
+    }
+    Ok(vec![("target".to_owned(), app_words.join(" "))])
 }
 
 fn position_lower(tokens: &[&str], needle: &str) -> Option<usize> {
