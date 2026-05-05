@@ -20,7 +20,7 @@ use thiserror::Error;
 use pneuma_acts::registry;
 use pneuma_core::act::ResolvedSlotValue;
 use pneuma_core::{
-    Act, BindingKind, Confidence, ConfidenceProducer, ConfidenceScore, ContextRef,
+    Act, AppId, BindingKind, Confidence, ConfidenceProducer, ConfidenceScore, ContextRef,
     ContextSnapshotId, ContractError, Directive, FileRef, PolicyEnvelope, Provenance,
     ReferentValue, ResolvedAct, ResolvedSlot, SpeechAct,
 };
@@ -173,6 +173,28 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
         let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
         let composing = build_navigate_directive(act, url, self.config.utterance);
         let confidence = build_navigate_confidence();
+        self.run_directive_lifecycle(composing, confidence, policy)
+    }
+
+    /// Run a `workspace.switch_app` directive end-to-end (step #14).
+    ///
+    /// Same correction-loop machinery as [`Self::run_navigate`]. Slot is
+    /// `target: Referent::App(AppId)`. The act is `Reversibility::Free`,
+    /// so committing executes immediately without ratify (per
+    /// `PolicyEnvelope::intrinsic`); the demo still walks the prompt
+    /// loop because the demo always asks before doing.
+    ///
+    /// On non-macOS platforms execution surfaces
+    /// `PraxisError::PlatformUnsupported`.
+    ///
+    /// `app_name` is validated upstream by [`AppId::new`] (rejects
+    /// empty / whitespace-only). Other validation happens at the
+    /// AppleScript boundary in `pneuma-praxis-bridge`.
+    pub fn run_switch_app(&mut self, app_name: &str) -> Result<DemoSummary, DemoError> {
+        let act = Self::find_switch_app_act();
+        let policy = PolicyEnvelope::intrinsic(act.reversibility, act.blast_radius);
+        let composing = build_switch_app_directive(act, app_name, self.config.utterance)?;
+        let confidence = build_switch_app_confidence();
         self.run_directive_lifecycle(composing, confidence, policy)
     }
 
@@ -413,6 +435,13 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
             .expect("browser.navigate canonical")
     }
 
+    fn find_switch_app_act() -> Act {
+        registry()
+            .into_iter()
+            .find(|a| a.id.as_str() == "workspace.switch_app")
+            .expect("workspace.switch_app canonical")
+    }
+
     fn print_frame(&mut self, frame: &HudFrame) -> Result<(), DemoError> {
         writeln!(self.out, "{}", frame.body)
             .map_err(|e| DemoError::Journal(pneuma_lago_bridge::JournalError::Io(e)))?;
@@ -523,6 +552,35 @@ fn build_navigate_directive(
 fn build_navigate_confidence() -> Confidence {
     Confidence::from_slots(vec![(
         "url".to_owned(),
+        ConfidenceScore::new(0.95, true, ConfidenceProducer::Deterministic).unwrap(),
+    )])
+    .expect("confidence is constructible")
+}
+
+fn build_switch_app_directive(
+    act: Act,
+    app_name: &str,
+    utterance: Option<&str>,
+) -> Result<Directive<pneuma_core::Composing>, DemoError> {
+    let resolved = ResolvedAct::empty(act);
+    let provenance = Provenance::new(Vec::new(), BindingKind::Deterministic, Utc::now());
+    let app_id = AppId::new(app_name).map_err(DemoError::Contract)?;
+    let directive = Directive::new(SpeechAct::Directive, resolved).bind_slot(
+        ResolvedSlot::new(
+            "target",
+            ResolvedSlotValue::Referent(ReferentValue::App(app_id)),
+            provenance,
+        )
+        .expect("slot is non-empty"),
+    );
+
+    let utterance_text = utterance.map_or_else(|| format!("switch to {app_name}"), str::to_owned);
+    Ok(directive.with_utterance(utterance_text))
+}
+
+fn build_switch_app_confidence() -> Confidence {
+    Confidence::from_slots(vec![(
+        "target".to_owned(),
         ConfidenceScore::new(0.95, true, ConfidenceProducer::Deterministic).unwrap(),
     )])
     .expect("confidence is constructible")

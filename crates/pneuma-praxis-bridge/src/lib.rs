@@ -50,13 +50,14 @@
 //!
 //! ## Acts supported in v0.2
 //!
-//! | Act               | Reversibility | Reverse                                |
-//! |-------------------|---------------|----------------------------------------|
-//! | `file.read`       | Free          | None — read has no side effects        |
-//! | `file.rename`     | Costly        | `RenameBack { from, to }`              |
-//! | `file.copy`       | Costly        | `DeleteCopy { path }`                  |
-//! | `file.write`      | Costly        | `RestoreContent { path, prior }`       |
-//! | `browser.navigate`| Costly        | `RestoreUrl { browser, prior_url }`    |
+//! | Act                      | Reversibility | Reverse                          |
+//! |--------------------------|---------------|----------------------------------|
+//! | `file.read`              | Free          | None — read has no side effects  |
+//! | `file.rename`            | Costly        | `RenameBack { from, to }`        |
+//! | `file.copy`              | Costly        | `DeleteCopy { path }`            |
+//! | `file.write`             | Costly        | `RestoreContent { path, prior }` |
+//! | `browser.navigate`       | Costly        | `RestoreUrl { browser, prior }`  |
+//! | `workspace.switch_app`   | Free          | None — re-switching is trivial   |
 //!
 //! `file.delete` is intentionally **not** wired here. It is
 //! [`Reversibility::Irreversible`][rev]; v0.2 punts irreversible-real
@@ -64,6 +65,24 @@
 //! exists.
 //!
 //! [rev]: pneuma_core::Reversibility::Irreversible
+//!
+//! ## `workspace.switch_app` execution model
+//!
+//! Step #14 of `MIL-PROJECT.md` §11.2. The second OS-control act —
+//! shares the macOS / AppleScript machinery with `browser.navigate`.
+//!
+//! - **Platform.** macOS only in v0.2. Other platforms return
+//!   `PraxisError::PlatformUnsupported`.
+//! - **Slot.** `target: Referent::App(AppId)`. Extracted with
+//!   `require_app_slot`.
+//! - **Reverse.** `ReverseAction::None`. The act is declared
+//!   `Reversibility::Free` because re-switching to the prior app is
+//!   trivial-to-do-manually; v0.2 doesn't capture the prior app for
+//!   automatic undo. A future Costly variant could add
+//!   `ReverseAction::SwitchBack { prior_app }`.
+//! - **Injection safety.** App names may contain spaces and unicode;
+//!   we forbid `"`, `\`, and newlines (same as URLs). Real app names
+//!   like `"Visual Studio Code"` work fine.
 //!
 //! ## `browser.navigate` execution model
 //!
@@ -298,6 +317,7 @@ impl Executor for LocalPraxis {
             "file.copy" => execute_copy(call),
             "file.write" => execute_write(call),
             "browser.navigate" => execute_browser_navigate(call),
+            "workspace.switch_app" => execute_switch_app(call),
             other => Err(PraxisError::UnsupportedAct(other.to_owned())),
         }
     }
@@ -438,6 +458,22 @@ fn execute_browser_navigate(call: &PraxisCall) -> Result<ExecutionOutcome, Praxi
     })
 }
 
+fn execute_switch_app(call: &PraxisCall) -> Result<ExecutionOutcome, PraxisError> {
+    let app_name = require_app_slot(call, "target")?;
+    reject_unsafe_app_name(&app_name)?;
+    activate_app(&app_name)?;
+    Ok(ExecutionOutcome {
+        act_id: call.act_id.clone(),
+        result: serde_json::json!({
+            "activated": app_name,
+        }),
+        // Reversibility::Free per the act registry: re-activating the
+        // prior app is something the user can do trivially. v0.2 does
+        // not capture the prior app for automatic undo.
+        reverse_action: ReverseAction::None,
+    })
+}
+
 // --- Reverse handlers -------------------------------------------------------
 
 fn reverse_rename(_call: &PraxisCall, from: &PathBuf, to: &PathBuf) -> Result<(), PraxisError> {
@@ -563,6 +599,66 @@ fn set_browser_front_url(_browser: &str, _url: &str) -> Result<(), PraxisError> 
     })
 }
 
+// --- App-name driver (cfg-gated AppleScript) --------------------------------
+
+/// Rejects app names that would break the AppleScript shell-out.
+///
+/// Same denylist as `reject_unsafe_url` — block AppleScript-string
+/// terminators / escape characters. Real macOS app names like
+/// `"Visual Studio Code"`, `"Google Chrome"`, `"Microsoft Outlook"`
+/// pass through unchanged.
+fn reject_unsafe_app_name(name: &str) -> Result<(), PraxisError> {
+    if name.is_empty() {
+        return Err(PraxisError::UnsafeUrl {
+            // UnsafeUrl is the closest existing variant; v0.3 may
+            // introduce a UnsafeAppName variant if app-name validation
+            // diverges from URL validation.
+            reason: "app name is empty",
+        });
+    }
+    if name.contains('"') {
+        return Err(PraxisError::UnsafeUrl {
+            reason: "app name contains double-quote (would break AppleScript literal)",
+        });
+    }
+    if name.contains('\\') {
+        return Err(PraxisError::UnsafeUrl {
+            reason: "app name contains backslash (would break AppleScript literal)",
+        });
+    }
+    if name.contains('\n') || name.contains('\r') {
+        return Err(PraxisError::UnsafeUrl {
+            reason: "app name contains newline",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn activate_app(name: &str) -> Result<(), PraxisError> {
+    reject_unsafe_app_name(name)?;
+    let script = format!("tell application \"{name}\" to activate");
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(PraxisError::ExternalCommand {
+            command: "osascript".to_owned(),
+            reason: stderr.trim().to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_app(_name: &str) -> Result<(), PraxisError> {
+    Err(PraxisError::PlatformUnsupported {
+        reason: "workspace.switch_app requires macOS osascript",
+    })
+}
+
 // --- Slot extraction helpers ------------------------------------------------
 
 fn slot<'a>(call: &'a PraxisCall, name: &str) -> Option<&'a ResolvedSlotValue> {
@@ -597,6 +693,23 @@ fn require_string_slot(call: &PraxisCall, name: &str) -> Result<String, PraxisEr
             act: call.act_id.as_str().to_owned(),
             slot: name.to_owned(),
             reason: format!("expected String, got {other:?}"),
+        }),
+    }
+}
+
+/// Extract a `Referent::App(AppId)` binding from a slot. Used by
+/// `workspace.switch_app`. Returns the inner app-name string by clone.
+fn require_app_slot(call: &PraxisCall, name: &str) -> Result<String, PraxisError> {
+    let value = slot(call, name).ok_or_else(|| PraxisError::MissingSlot {
+        act: call.act_id.as_str().to_owned(),
+        slot: name.to_owned(),
+    })?;
+    match value {
+        ResolvedSlotValue::Referent(ReferentValue::App(app)) => Ok(app.as_str().to_owned()),
+        other => Err(PraxisError::WrongSlotKind {
+            act: call.act_id.as_str().to_owned(),
+            slot: name.to_owned(),
+            reason: format!("expected Referent(App), got {other:?}"),
         }),
     }
 }

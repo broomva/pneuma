@@ -239,3 +239,52 @@ fn navigate_alone_errors() {
     let err = parse_utterance("navigate", &r).unwrap_err();
     assert!(matches!(err, ParseError::MissingSlot { ref slot, .. } if slot == "url"));
 }
+
+// --- workspace.switch_app (step #14) -------------------------------------
+
+#[test]
+fn switch_to_app_extracts_target() {
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("switch to Safari", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "workspace.switch_app");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("target".to_owned(), "Safari".to_owned())]
+    );
+}
+
+#[test]
+fn switch_app_without_to_extracts_target() {
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("switch Safari", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "workspace.switch_app");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("target".to_owned(), "Safari".to_owned())]
+    );
+}
+
+#[test]
+fn switch_to_multiword_app_preserves_spaces() {
+    let r = ActRegistry::canonical();
+    let parsed = parse_utterance("switch to Visual Studio Code", &r).unwrap();
+    assert_eq!(parsed.act_id.as_str(), "workspace.switch_app");
+    assert_eq!(
+        parsed.payload_slots,
+        vec![("target".to_owned(), "Visual Studio Code".to_owned())]
+    );
+}
+
+#[test]
+fn switch_alone_errors() {
+    let r = ActRegistry::canonical();
+    let err = parse_utterance("switch", &r).unwrap_err();
+    assert!(matches!(err, ParseError::MissingSlot { ref slot, .. } if slot == "target"));
+}
+
+#[test]
+fn switch_to_with_no_app_errors() {
+    let r = ActRegistry::canonical();
+    let err = parse_utterance("switch to ", &r).unwrap_err();
+    assert!(matches!(err, ParseError::MissingSlot { ref slot, .. } if slot == "target"));
+}
