@@ -26,14 +26,18 @@
 //! ## Environment variables
 //!
 //! - `MIL_UTTERANCE` — natural-language utterance (parsed deterministically).
+//! - `MIL_VOICE_INPUT` — when set, drive `sensorium-voice` to obtain
+//!   the utterance from voice input. v0.2 uses the Mock backend
+//!   (`MIL_VOICE_MOCK` for the canned transcript); v0.3 swaps in
+//!   real Parakeet TDT (EOU streaming) inference behind a feature flag.
+//! - `MIL_VOICE_MOCK` — canned response when `MIL_VOICE_INPUT` is set
+//!   (default `"explain this"`).
 //! - `MIL_AGENT_COMMAND` — override the agent CLI command (default `claude`).
 //! - `MIL_AGENT_ARGS` — comma-separated args (default `--print`).
 //!
-//! ## Environment
-//!
-//! - `MIL_UTTERANCE` — optional natural-language utterance. When unset
-//!   or empty, defaults to the canonical rename flow (rename `old.txt`
-//!   to `new.txt`).
+//! When `MIL_UTTERANCE` is unset and `MIL_VOICE_INPUT` is unset, the
+//! demo defaults to the canonical rename flow (rename `old.txt` to
+//! `new.txt`).
 
 #![allow(clippy::print_stderr, clippy::print_stdout)] // demo binary
 
@@ -51,7 +55,8 @@ use pneuma_ratify::StdinRatifier;
 use pneuma_resolver::is_deictic_surface;
 use sensorium_context::{ManualObserver, Observer};
 use sensorium_context_macos::MacOsWorkspaceObserver;
-use sensorium_core::Timestamp;
+use sensorium_core::{PrimitiveToken, Timestamp};
+use sensorium_voice::{Backend as VoiceBackend, VoiceConfig, VoiceSession};
 
 fn main() -> ExitCode {
     match run() {
@@ -67,8 +72,23 @@ fn run() -> std::io::Result<()> {
     let work_dir = tempdir_for_journal()?;
     let journal_path = work_dir.path.join("demo.journal.ndjson");
 
-    // Parse `MIL_UTTERANCE` upfront so we know which flow to run.
-    let utterance_env = std::env::var("MIL_UTTERANCE").ok();
+    // Source the utterance from one of three places, in priority order:
+    // 1. MIL_UTTERANCE env var (typed text).
+    // 2. MIL_VOICE_INPUT env var → drive sensorium-voice to obtain a
+    //    transcript. v0.2 ships the Mock backend (canned response from
+    //    MIL_VOICE_MOCK env var); v0.3 will swap in real Parakeet ONNX
+    //    inference behind a feature flag.
+    // 3. Neither set → default rename flow.
+    let utterance_env = std::env::var("MIL_UTTERANCE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if std::env::var("MIL_VOICE_INPUT").is_ok() {
+                listen_via_voice().ok()
+            } else {
+                None
+            }
+        });
     let registry = ActRegistry::canonical();
     let parsed = utterance_env
         .as_deref()
@@ -76,7 +96,7 @@ fn run() -> std::io::Result<()> {
         .and_then(|s| match parse_utterance(s, &registry) {
             Ok(p) => Some(p),
             Err(err) => {
-                eprintln!("demo: could not parse MIL_UTTERANCE ({err}); using default flow");
+                eprintln!("demo: could not parse utterance ({err}); using default flow");
                 None
             }
         });
@@ -412,6 +432,53 @@ fn print_summary(
             Ok(())
         }
         Err(e) => Err(std::io::Error::other(format!("{e}"))),
+    }
+}
+
+// --- Voice input ----------------------------------------------------------
+
+/// Drive a `sensorium_voice::VoiceSession` to obtain an utterance.
+///
+/// v0.2 uses the Mock backend with a canned response sourced from
+/// `MIL_VOICE_MOCK` (or a default placeholder). The real Parakeet
+/// ONNX inference path lands behind `feature = "parakeet"` in the
+/// follow-up that adds parakeet-rs + ort + cpal + hf-hub +
+/// voice_activity_detector to sensorium-voice.
+///
+/// The wiring is identical: caller calls `feed(chunk)` (no-op for
+/// Mock), `flush()` to consume the canned/transcribed text, and
+/// receives the `PrimitiveToken::Predication` over the channel. v0.2
+/// validates the contract chain end-to-end without real audio
+/// hardware.
+fn listen_via_voice() -> std::io::Result<String> {
+    let canned = std::env::var("MIL_VOICE_MOCK").unwrap_or_else(|_| "explain this".to_owned());
+
+    println!("┌─ MIL voice input · sensorium-voice ──────────────────────────────────────");
+    println!("│ backend: mock (real Parakeet TDT lands behind feature = \"parakeet\")");
+    println!("│ utterance source: MIL_VOICE_MOCK env var (defaults to 'explain this')");
+    println!("│ transcript: {canned}");
+    println!("└──────────────────────────────────────────────────────────────────────────");
+    println!();
+
+    let mut session = VoiceSession::new(VoiceConfig {
+        backend: VoiceBackend::mock(canned),
+        ..VoiceConfig::default()
+    })
+    .map_err(|e| std::io::Error::other(format!("voice session: {e}")))?;
+    let rx = session
+        .tokens()
+        .ok_or_else(|| std::io::Error::other("voice tokens already taken"))?;
+    session
+        .flush()
+        .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+    let token = rx
+        .recv_timeout(std::time::Duration::from_millis(500))
+        .map_err(|_| std::io::Error::other("voice session produced no token"))?;
+    match token {
+        PrimitiveToken::Predication(t) => Ok(t.value),
+        other => Err(std::io::Error::other(format!(
+            "voice session produced non-predication token: {other:?}"
+        ))),
     }
 }
 

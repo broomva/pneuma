@@ -45,6 +45,7 @@ tempfile = "3.10"
 sensorium-core = { path = "../sensorium/crates/sensorium-core", version = "0.2.0" }
 sensorium-context = { path = "../sensorium/crates/sensorium-context", version = "0.2.0" }
 sensorium-context-macos = { path = "../sensorium/crates/sensorium-context-macos", version = "0.2.0" }
+sensorium-voice = { path = "../sensorium/crates/sensorium-voice", version = "0.2.0" }
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive", "rc"] }

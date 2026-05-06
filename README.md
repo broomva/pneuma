@@ -63,6 +63,13 @@ $ MIL_UTTERANCE='explain this' cargo run -p pneuma-demo
 # `target = App(<frontmost-app-bundle-id>)`. Claude responds about
 # whatever app is currently frontmost. Requires `claude` on PATH.
 
+$ MIL_VOICE_INPUT=1 MIL_VOICE_MOCK='refactor this file' cargo run -p pneuma-demo
+# Drives sensorium-voice → Mock backend produces 'refactor this file'
+# → parser + resolver + macOS observer → Claude. v0.2 ships the Mock
+# backend; v0.3 swaps in real Parakeet TDT (EOU streaming) inference
+# via parakeet-rs + ort + cpal + voice_activity_detector behind
+# `feature = "parakeet"` in sensorium-voice.
+
 $ MIL_UTTERANCE='explain MIL in one sentence' cargo run -p pneuma-demo
 # Forwards to `claude --print`, captures the response in a HUD frame,
 # journals as AgentExecuted. Requires `claude` on PATH.
