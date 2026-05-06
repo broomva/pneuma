@@ -15,12 +15,13 @@ its afterlife.**
 | [`pneuma-router`](crates/pneuma-router) | Pure dispatch function: `dispatch(d, ctx) -> Dispatch{Praxis, Arcan, Spaces, Custom, Refuse}`. ~150 LoC. | 9 |
 | [`pneuma-praxis-bridge`](crates/pneuma-praxis-bridge) | First executor — `LocalPraxis` runs `file.read/rename/copy/write` + `browser.navigate` + `workspace.switch_app` with typed `ReverseAction`. | 23 + 2 ignored |
 | [`pneuma-arcan-bridge`](crates/pneuma-arcan-bridge) | First agent-runtime executor — generic `StdioCommandArcan` for any agent CLI (Claude Code default), `MockArcan` for tests. | 14 + 1 ignored |
+| [`pneuma-resolver`](crates/pneuma-resolver) | Deictic / anaphor resolver — replaces "this", "that", "the focused window" with concrete typed referents read from `WorkspaceContext`. | 18 |
 | [`pneuma-lago-bridge`](crates/pneuma-lago-bridge) | Append-only NDJSON journal — `JournalRecord::{Committed, Executed, Reversed, Cancelled, Failed}`. | 8 |
 | [`pneuma-hud`](crates/pneuma-hud) | Pure rendering — every directive state + outcomes + errors → ASCII frames. | 14 |
 | [`pneuma-ratify`](crates/pneuma-ratify) | Approval-channel FSM — `ApprovalDecision`, `Ratifier` trait, `StdinRatifier`, `MockRatifier`. | 15 |
 | [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; rename, navigate, switch-app, and **agent** flows. The agent path forwards directives to `claude` (or any CLI via `MIL_AGENT_COMMAND`). | 40 + 3 ignored |
 
-**Total tests:** 210 · 5 ignored (interactive) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
+**Total tests:** 228 · 7 ignored (interactive + ignored doctests) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
 
 Path-deps `sensorium-context` (sibling repo at `../sensorium`) so the same
 CI matrix applies. See [`MIL-PROJECT.md`](../../MIL-PROJECT.md) §10 for the
@@ -28,9 +29,8 @@ full crate-by-crate notes.
 
 Phase-2.2+ crates planned (not yet built): `pneuma-binder` (cross-modal
 temporal binding, needed once Sensorium has multiple producers),
-`pneuma-resolver` (anaphora + workspace resolution — "this", "that", "the
-focused window"), `pneuma-predication-model` (LLM-bound predication,
-v0.3+, behind a feature flag).
+`pneuma-predication-model` (LLM-bound predication, v0.3+, behind a
+feature flag).
 
 ## What you can do today
 

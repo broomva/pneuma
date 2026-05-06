@@ -5,6 +5,7 @@ members = [
     "crates/pneuma-router",
     "crates/pneuma-praxis-bridge",
     "crates/pneuma-arcan-bridge",
+    "crates/pneuma-resolver",
     "crates/pneuma-lago-bridge",
     "crates/pneuma-hud",
     "crates/pneuma-ratify",
@@ -31,6 +32,7 @@ pneuma-acts = { path = "crates/pneuma-acts", version = "0.2.0" }
 pneuma-router = { path = "crates/pneuma-router", version = "0.2.0" }
 pneuma-praxis-bridge = { path = "crates/pneuma-praxis-bridge", version = "0.2.0" }
 pneuma-arcan-bridge = { path = "crates/pneuma-arcan-bridge", version = "0.2.0" }
+pneuma-resolver = { path = "crates/pneuma-resolver", version = "0.2.0" }
 pneuma-lago-bridge = { path = "crates/pneuma-lago-bridge", version = "0.2.0" }
 pneuma-hud = { path = "crates/pneuma-hud", version = "0.2.0" }
 pneuma-ratify = { path = "crates/pneuma-ratify", version = "0.2.0" }
