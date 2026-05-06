@@ -19,9 +19,9 @@ its afterlife.**
 | [`pneuma-lago-bridge`](crates/pneuma-lago-bridge) | Append-only NDJSON journal — `JournalRecord::{Committed, Executed, Reversed, Cancelled, Failed}`. | 8 |
 | [`pneuma-hud`](crates/pneuma-hud) | Pure rendering — every directive state + outcomes + errors → ASCII frames. | 14 |
 | [`pneuma-ratify`](crates/pneuma-ratify) | Approval-channel FSM — `ApprovalDecision`, `Ratifier` trait, `StdinRatifier`, `MockRatifier`. | 15 |
-| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; rename, navigate, switch-app, and **agent** flows. The agent path forwards directives to `claude` (or any CLI via `MIL_AGENT_COMMAND`). | 40 + 3 ignored |
+| [`pneuma-demo`](crates/pneuma-demo) | Runnable binary + library — wires the entire stack; reads `MIL_UTTERANCE` env var; deterministic utterance parser; rename, navigate, switch-app, and **agent** flows. The agent path forwards directives to `claude` (or any CLI via `MIL_AGENT_COMMAND`) and resolves deictics ("this", "that") against the live macOS workspace. | 42 + 3 ignored |
 
-**Total tests:** 228 · 7 ignored (interactive + ignored doctests) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
+**Total tests:** 230 · 7 ignored (interactive + ignored doctests) · all green on `cargo test --workspace`. All clippy-clean under `-D warnings + pedantic`.
 
 Path-deps `sensorium-context` (sibling repo at `../sensorium`) so the same
 CI matrix applies. See [`MIL-PROJECT.md`](../../MIL-PROJECT.md) §10 for the
@@ -57,6 +57,11 @@ $ MIL_UTTERANCE='switch to Safari' cargo run -p pneuma-demo
 
 $ MIL_UTTERANCE='switch Visual Studio Code' cargo run -p pneuma-demo
 # Multi-word app names work
+
+$ MIL_UTTERANCE='explain this' cargo run -p pneuma-demo
+# Resolves "this" against the live macOS workspace observer:
+# `target = App(<frontmost-app-bundle-id>)`. Claude responds about
+# whatever app is currently frontmost. Requires `claude` on PATH.
 
 $ MIL_UTTERANCE='explain MIL in one sentence' cargo run -p pneuma-demo
 # Forwards to `claude --print`, captures the response in a HUD frame,
@@ -99,14 +104,13 @@ Cursor, Arcan internal) are downstream of `Dispatch::Arcan(AgentPrompt)`.
 
 v0.2.0 — Tier 2 (single-act demo) complete, Phase 1.1 (real Observer)
 complete, Phase 2.1 (deterministic parser) complete, steps #13
-(`browser.navigate`) + #14 (`workspace.switch_app`) Praxis acts + demo
-flows complete, **step #16 Arcan bridge library + demo flow complete**.
-Tier 3 — the empirical milestone — is now fully runnable on macOS: a
-human user types natural language, the deterministic flows execute on
-the OS directly, and `agent.*` utterances delegate to a Claude Code
-subprocess through the typed contract. Remaining: #15
-(`sensorium-context-macos`), #17 (sensorium-voice), #18
-(`pneuma-resolver`).
+(`browser.navigate`) + #14 (`workspace.switch_app`) Praxis acts + #16
+(Arcan bridge + demo flow) + **#15 (macOS workspace observer) + #18
+(deictic resolver) all complete**, plus the integration that wires
+them: `MIL_UTTERANCE='explain this'` resolves "this" → the frontmost
+macOS app, dispatches to Claude. Tier 3 — the empirical milestone —
+is now fully runnable on macOS with deictic awareness. Remaining: #17
+(sensorium-voice), AX-based focused-window query, async streaming.
 
 ## Cross-references
 

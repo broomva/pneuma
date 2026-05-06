@@ -45,10 +45,12 @@ use std::process::ExitCode;
 use pneuma_acts::ActRegistry;
 use pneuma_arcan_bridge::StdioCommandArcan;
 use pneuma_core::act::ResolvedSlotValue;
-use pneuma_core::{FileRef, ReferentValue};
+use pneuma_core::{AnaphorRef, FileRef, ReferentValue};
 use pneuma_demo::{Demo, DemoConfig, ParsedUtterance, manual_observer_for, parse_utterance};
 use pneuma_ratify::StdinRatifier;
-use sensorium_context::ManualObserver;
+use pneuma_resolver::is_deictic_surface;
+use sensorium_context::{ManualObserver, Observer};
+use sensorium_context_macos::MacOsWorkspaceObserver;
 use sensorium_core::Timestamp;
 
 fn main() -> ExitCode {
@@ -281,17 +283,24 @@ fn run_arcan_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io::Resu
 
     // Promote parser-extracted slots into typed referents:
     //
-    // - `target` that resolves to an existing file path → `File(FileRef)`
+    // - `target` that's a recognized deictic surface form ("this",
+    //   "the focused window", etc.) → `Anaphor(AnaphorRef)`. The
+    //   resolver in `pneuma-resolver` (step #18) replaces this with
+    //   a concrete typed referent before finalize.
+    // - `target` that resolves to an existing file path → `File(FileRef)`.
     // - `target` that doesn't resolve to a file (free-form noun phrase
-    //   like "the auth module" or "MIL") → `Url(String)`. v0.2 uses
-    //   `Url` as a free-form string-shaped Referent; v0.3 will route
-    //   through `pneuma-resolver` for proper deictic / symbol
-    //   resolution.
+    //   like "the auth module" or "MIL") → `Url(String)` as a
+    //   free-form string-shaped Referent. v0.3 may route a smarter
+    //   parser through resolver+context.
     // - Everything else → bare String slot.
     let mut payload_slots: Vec<(String, ResolvedSlotValue)> = Vec::new();
     for (name, value) in &parsed.payload_slots {
         if name == "target" {
-            let typed = if std::path::Path::new(value).exists() {
+            let typed = if is_deictic_surface(value) {
+                let anaphor = AnaphorRef::new(value)
+                    .expect("non-empty deictic surface must construct AnaphorRef");
+                ResolvedSlotValue::Referent(ReferentValue::Anaphor(anaphor))
+            } else if std::path::Path::new(value).exists() {
                 ResolvedSlotValue::Referent(ReferentValue::File(FileRef::new(value)))
             } else {
                 ResolvedSlotValue::Referent(ReferentValue::Url(value.clone()))
@@ -329,7 +338,29 @@ fn run_arcan_flow(parsed: ParsedUtterance, journal_path: &Path) -> std::io::Resu
     let ratifier = StdinRatifier {
         prompt: String::new(),
     };
-    let observer = Box::new(ManualObserver::new(Timestamp::now()));
+    // Step #15 wiring: real macOS workspace observer for the arcan
+    // flow. Polls NSWorkspace at 250ms; on non-macOS hosts the
+    // observer is a stub (returns empty context). The resolver sees
+    // a populated focused_app whenever a real GUI session is active,
+    // letting "explain this app" / "refactor this" route to the
+    // correct entity.
+    //
+    // We give the observer a beat to populate via an initial eager
+    // poll before running the directive lifecycle, so the very first
+    // turn has a fresh context.
+    let observer: Box<dyn Observer> =
+        match MacOsWorkspaceObserver::start(std::time::Duration::from_millis(250)) {
+            Ok(obs) => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Box::new(obs)
+            }
+            Err(err) => {
+                eprintln!(
+                    "demo: macOS observer failed to start ({err}); falling back to empty observer"
+                );
+                Box::new(ManualObserver::new(Timestamp::now()))
+            }
+        };
     let mut demo = Demo::new(config, handle, ratifier, observer)
         .map_err(|e| std::io::Error::other(format!("setup: {e}")))?;
 

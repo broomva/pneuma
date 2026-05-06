@@ -294,40 +294,48 @@ fn extract_switch_app_slots(
 
 /// Extract `target` from "VERB SUBJECT [tail]" for agent acts.
 ///
-/// Strategy: take everything after the verb, drop filler words, join
-/// with single spaces. The result is a string-typed `target` slot
-/// that the demo's `run_arcan_flow` will promote into the right
-/// referent variant (File if the string is a path that exists, Url
-/// otherwise).
+/// Strategy: take everything after the verb. Unlike `file.*`
+/// extractors, this one does NOT strip filler words like "this" /
+/// "that" / "the" — those words ARE meaningful targets in the
+/// agent context (e.g., "explain this", "refactor that"). The
+/// demo's `run_arcan_flow` then either:
+///
+/// - Recognizes the target as a deictic surface (via
+///   `pneuma_resolver::is_deictic_surface`) and wraps as
+///   `ReferentValue::Anaphor` for the resolver to resolve against
+///   live workspace context.
+/// - Promotes a path-shaped target to `ReferentValue::File`.
+/// - Falls back to `ReferentValue::Url` for free-form noun phrases.
 ///
 /// Examples:
-/// - `"explain MIL"` → `target = "MIL"`
-/// - `"refactor the auth module"` → `target = "auth module"`
-/// - `"review crates/foo/src/lib.rs"` → `target = "crates/foo/src/lib.rs"`
-///
-/// agent.generate has no `target` slot in v0.2 (only `instruction`),
-/// but we still extract one for compatibility — the demo's auto-bind
-/// path will skip unused slots.
+/// - `"explain this"` → `target = "this"` → Anaphor → File/App
+/// - `"explain the focused window"` → `target = "the focused window"` → Anaphor → Window
+/// - `"explain MIL"` → `target = "MIL"` → Url("MIL")
+/// - `"refactor /tmp/auth.rs"` → `target = "/tmp/auth.rs"` → File
 ///
 /// Returns `Result` for shape-consistency with the other
-/// `extract_*_slots` helpers (which can fail with MissingSlot); this
-/// one is always `Ok`.
+/// `extract_*_slots` helpers; this one is always `Ok`.
 #[allow(clippy::unnecessary_wraps)]
 fn extract_agent_slots(
     tokens: &[&str],
     _utterance: &str,
 ) -> Result<Vec<(String, String)>, ParseError> {
+    if tokens.is_empty() {
+        // Bare "explain"/"refactor"/etc. — no target. Empty payload;
+        // the demo's lifecycle will error at finalize() with a
+        // contract error citing the unbound `target` slot.
+        return Ok(Vec::new());
+    }
+    // Take all non-empty tokens verbatim, joined by single spaces.
+    // Deictics ("this", "that", "the focused window") survive — the
+    // resolver handles them.
     let target_words: Vec<String> = tokens
         .iter()
         .copied()
-        .filter(|t| !is_filler_word(t))
+        .filter(|t| !t.is_empty())
         .map(str::to_string)
         .collect();
     if target_words.is_empty() {
-        // Bare "explain"/"refactor"/etc. — no target. Empty payload;
-        // the demo's lifecycle will error at finalize() with a
-        // contract error citing the unbound `target` slot, which is
-        // the right diagnostic.
         return Ok(Vec::new());
     }
     Ok(vec![("target".to_owned(), target_words.join(" "))])
