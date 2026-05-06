@@ -22,14 +22,13 @@
 use std::path::Path;
 
 use pneuma_arcan_bridge::MockArcan;
-use pneuma_core::FileRef;
-use pneuma_core::ReferentValue;
 use pneuma_core::act::ResolvedSlotValue;
+use pneuma_core::{AnaphorRef, FileRef, ReferentValue};
 use pneuma_demo::{Demo, DemoConfig, DemoError};
 use pneuma_lago_bridge::{JournalReader, JournalRecord};
 use pneuma_ratify::{ApprovalDecision, MockRatifier};
 use sensorium_context::ManualObserver;
-use sensorium_core::Timestamp;
+use sensorium_core::{AppId as SAppId, Timestamp};
 
 const REFACTOR_INSTRUCTION: &str = "Refactor the authentication module to use ed25519.";
 const CANNED_RESPONSE: &str = "Refactored 3 functions: parse_token, sign_token, verify_token.";
@@ -235,6 +234,134 @@ fn arcan_unknown_act_id_errors_with_refused() {
     assert!(
         matches!(err, DemoError::Refused(_)),
         "expected DemoError::Refused for unknown act_id, got {err:?}"
+    );
+    std::mem::forget(dir);
+}
+
+// --- Property 6 (Track C): Deictic resolution end-to-end ------------------
+//
+// Demonstrates the parallel-tracks A+B+C wiring: the demo binds an
+// `Anaphor("this")` slot for an `agent.explain` directive, the
+// resolver runs (via the demo's compose_ratify_and_commit), and
+// the resolved `App(...)` reaches the executor.
+
+#[test]
+fn arcan_anaphor_target_resolves_against_observer_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal_path = dir.path().join("journal.ndjson");
+
+    // Pre-populate observer with a focused app — what the macOS
+    // observer would supply on a real GUI session.
+    let observer = ManualObserver::new(Timestamp::now());
+    observer.rebuild_with(|b| b.with_focused_app(Some(SAppId::new("com.test.editor").unwrap())));
+
+    let config = DemoConfig {
+        source_path: Path::new(""),
+        new_name: "",
+        journal_path: &journal_path,
+        hud_width: 60,
+        utterance: Some("explain this"),
+    };
+
+    // Bind `target = Anaphor("this")` directly — this is what the
+    // demo binary's slot-promotion logic in run_arcan_flow produces
+    // for deictic surface forms.
+    let payload_slots = vec![(
+        "target".to_owned(),
+        ResolvedSlotValue::Referent(ReferentValue::Anaphor(AnaphorRef::new("this").unwrap())),
+    )];
+
+    let mut out = Vec::<u8>::new();
+    let result = {
+        let mut demo = Demo::new(
+            config,
+            &mut out,
+            MockRatifier::from_decisions(vec![ApprovalDecision::Commit, ApprovalDecision::Cancel]),
+            Box::new(observer),
+        )
+        .unwrap();
+        let arcan = MockArcan::new("explained");
+        demo.run_arcan("agent.explain", "explain this", payload_slots, &arcan)
+    };
+
+    let _summary = result.expect("anaphor must resolve to App and dispatch");
+
+    let records: Vec<_> = JournalReader::open(&journal_path)
+        .iter()
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    // The committed directive's bindings should show the resolved
+    // App, not the original Anaphor.
+    let committed_record = records
+        .iter()
+        .find(|r| matches!(r, JournalRecord::Committed { .. }))
+        .expect("Committed record must exist");
+    if let JournalRecord::Committed { directive, .. } = committed_record {
+        let target = directive
+            .act
+            .binding("target")
+            .expect("target binding must exist after resolution");
+        match &target.value {
+            ResolvedSlotValue::Referent(ReferentValue::App(app)) => {
+                assert_eq!(
+                    app.as_str(),
+                    "com.test.editor",
+                    "anaphor 'this' must resolve to the focused App"
+                );
+            }
+            other => panic!("anaphor must be replaced by App; got {other:?}"),
+        }
+    }
+
+    let stdout = String::from_utf8_lossy(&out);
+    assert!(
+        stdout.contains("App(com.test.editor)"),
+        "HUD's COMPOSING frame must show the resolved App; got: {stdout}"
+    );
+
+    std::mem::forget(dir);
+}
+
+#[test]
+fn arcan_anaphor_with_no_focus_surfaces_resolver_error_before_ratify() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal_path = dir.path().join("journal.ndjson");
+    let observer = ManualObserver::new(Timestamp::now()); // empty context
+
+    let config = DemoConfig {
+        source_path: Path::new(""),
+        new_name: "",
+        journal_path: &journal_path,
+        hud_width: 60,
+        utterance: Some("explain this"),
+    };
+    let payload_slots = vec![(
+        "target".to_owned(),
+        ResolvedSlotValue::Referent(ReferentValue::Anaphor(AnaphorRef::new("this").unwrap())),
+    )];
+    let mut out = Vec::<u8>::new();
+    let result = {
+        let mut demo = Demo::new(
+            config,
+            &mut out,
+            MockRatifier::from_decisions(vec![ApprovalDecision::Cancel]),
+            Box::new(observer),
+        )
+        .unwrap();
+        let arcan = MockArcan::new("hi");
+        demo.run_arcan("agent.explain", "explain this", payload_slots, &arcan)
+    };
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, DemoError::Resolver(_)),
+        "empty context must surface DemoError::Resolver before ratify; got {err:?}"
+    );
+    let stdout = String::from_utf8_lossy(&out);
+    assert!(
+        stdout.contains("RESOLVER ERROR"),
+        "HUD must show RESOLVER ERROR frame; got: {stdout}"
     );
     std::mem::forget(dir);
 }

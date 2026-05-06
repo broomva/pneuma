@@ -29,6 +29,7 @@ use pneuma_hud::{HudFrame, HudRenderer};
 use pneuma_lago_bridge::{JournalRecord, JournalWriter};
 use pneuma_praxis_bridge::{ExecutionOutcome, Executor, LocalPraxis, PraxisError};
 use pneuma_ratify::{ApprovalDecision, Ratifier};
+use pneuma_resolver::{ResolverError, resolve_directive};
 use pneuma_router::{Dispatch, dispatch};
 use sensorium_context::Observer;
 use sensorium_core::WorkspaceContext;
@@ -51,6 +52,12 @@ pub enum DemoError {
     /// Error during Arcan executor dispatch.
     #[error("agent: {0}")]
     Arcan(ArcanError),
+
+    /// Error during anaphor / deictic resolution. Surfaces when the
+    /// user says "this" / "that" / "the focused window" but the
+    /// workspace observer can't supply a concrete referent.
+    #[error("resolver: {0}")]
+    Resolver(ResolverError),
 
     /// Journal I/O error.
     #[error("journal: {0}")]
@@ -466,6 +473,23 @@ impl<'a, O: std::io::Write, R: Ratifier> Demo<'a, O, R> {
     ) -> Result<(Directive<pneuma_core::Committed>, WorkspaceContext), DemoError> {
         // 1. Substrate. Read from the observer.
         let context: WorkspaceContext = self.observer.current();
+
+        // 1.5. Anaphor / deictic resolution (step #18 wiring).
+        // Replaces ReferentValue::Anaphor("this") with concrete
+        // typed referents read from the just-snapshotted context.
+        // Failures surface BEFORE the user is asked to ratify, so
+        // they see "no focused file" up front rather than discovering
+        // it after committing.
+        let composing = match resolve_directive(composing, &context) {
+            Ok(d) => d,
+            Err(err) => {
+                let frame = self
+                    .renderer
+                    .render_info("RESOLVER ERROR", &format!("{err}"));
+                self.print_frame(&frame)?;
+                return Err(DemoError::Resolver(err));
+            }
+        };
 
         // 2. Render composing.
         let frame = self.renderer.render_composing(&composing);
