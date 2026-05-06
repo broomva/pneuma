@@ -28,6 +28,33 @@ walks through the contract, prints every HUD frame, and prompts you
 at the ratification step. Press Enter to commit, `u` to undo, `q` to
 quit.
 
+### Voice input
+
+Set `MIL_VOICE_INPUT=1` to drive the directive from speech instead
+of typed text. Pick the backend with `MIL_VOICE_BACKEND`:
+
+| Value     | Behavior                                                                     |
+|-----------|------------------------------------------------------------------------------|
+| _unset_   | Falls back to `mock`.                                                        |
+| `mock`    | Returns the value of `MIL_VOICE_MOCK` (default `"explain this"`). No mic.    |
+| `parakeet`| Opens the default mic, runs `EnergyVad` + Parakeet TDT EOU streaming, and    |
+|           | returns the first complete utterance. **Requires `--features parakeet`.**    |
+
+Examples:
+
+```sh
+# Mock — fully scripted, no mic.
+MIL_VOICE_INPUT=1 MIL_VOICE_MOCK="rename it to bar.txt" cargo run -p pneuma-demo
+
+# Real Parakeet on M-series Apple Silicon. First run downloads
+# ~150MB of weights into ~/.cache/sensorium-voice/parakeet-eou/.
+MIL_VOICE_INPUT=1 MIL_VOICE_BACKEND=parakeet \
+    cargo run -p pneuma-demo --features parakeet
+```
+
+`MIL_VOICE_TIMEOUT_SECS` (default 30) caps how long the parakeet path
+waits for the first utterance before giving up.
+
 ## What it is NOT
 
 - Not a production application. Everything is a single-process

@@ -27,10 +27,12 @@
 //!
 //! - `MIL_UTTERANCE` — natural-language utterance (parsed deterministically).
 //! - `MIL_VOICE_INPUT` — when set, drive `sensorium-voice` to obtain
-//!   the utterance from voice input. v0.2 uses the Mock backend
-//!   (`MIL_VOICE_MOCK` for the canned transcript); v0.3 swaps in
-//!   real Parakeet TDT (EOU streaming) inference behind a feature flag.
-//! - `MIL_VOICE_MOCK` — canned response when `MIL_VOICE_INPUT` is set
+//!   the utterance from voice input.
+//! - `MIL_VOICE_BACKEND` — pick the STT backend. `mock` (default,
+//!   uses `MIL_VOICE_MOCK`) or `parakeet` (real on-device NVIDIA
+//!   Parakeet TDT EOU streaming inference; requires this binary
+//!   to be built with `--features parakeet`).
+//! - `MIL_VOICE_MOCK` — canned response when `MIL_VOICE_BACKEND=mock`
 //!   (default `"explain this"`).
 //! - `MIL_AGENT_COMMAND` — override the agent CLI command (default `claude`).
 //! - `MIL_AGENT_ARGS` — comma-separated args (default `--print`).
@@ -75,20 +77,22 @@ fn run() -> std::io::Result<()> {
     // Source the utterance from one of three places, in priority order:
     // 1. MIL_UTTERANCE env var (typed text).
     // 2. MIL_VOICE_INPUT env var → drive sensorium-voice to obtain a
-    //    transcript. v0.2 ships the Mock backend (canned response from
-    //    MIL_VOICE_MOCK env var); v0.3 will swap in real Parakeet ONNX
-    //    inference behind a feature flag.
+    //    transcript. The backend is selected by MIL_VOICE_BACKEND
+    //    (`mock` default, or `parakeet` for real on-device inference
+    //    when this binary is built with `--features parakeet`).
     // 3. Neither set → default rename flow.
-    let utterance_env = std::env::var("MIL_UTTERANCE")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            if std::env::var("MIL_VOICE_INPUT").is_ok() {
-                listen_via_voice().ok()
-            } else {
-                None
-            }
-        });
+    //
+    // If the user explicitly asked for voice (MIL_VOICE_INPUT set)
+    // but voice fails, surface the error rather than silently
+    // falling through to the rename flow — they'd never know what
+    // went wrong otherwise.
+    let utterance_env = if let Ok(typed) = std::env::var("MIL_UTTERANCE") {
+        Some(typed).filter(|s| !s.trim().is_empty())
+    } else if std::env::var("MIL_VOICE_INPUT").is_ok() {
+        Some(listen_via_voice()?)
+    } else {
+        None
+    };
     let registry = ActRegistry::canonical();
     let parsed = utterance_env
         .as_deref()
@@ -437,24 +441,60 @@ fn print_summary(
 
 // --- Voice input ----------------------------------------------------------
 
+/// Backend selector parsed from `MIL_VOICE_BACKEND`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VoiceBackendKind {
+    /// Programmable mock — emits the canned `MIL_VOICE_MOCK` value
+    /// on flush. No microphone access. Default when the env var is
+    /// unset or empty.
+    Mock,
+    /// Real on-device NVIDIA Parakeet TDT EOU streaming inference.
+    /// Requires `--features parakeet` at build time and a working
+    /// microphone at runtime.
+    Parakeet,
+}
+
+/// Parse `MIL_VOICE_BACKEND`. `None` and the empty string default
+/// to `Mock`. Trailing/leading whitespace is trimmed; matching is
+/// case-insensitive. Unknown values return an `io::Error` with a
+/// helpful message.
+fn parse_voice_backend(raw: Option<&str>) -> std::io::Result<VoiceBackendKind> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(VoiceBackendKind::Mock),
+        Some(s) => match s.to_ascii_lowercase().as_str() {
+            "mock" => Ok(VoiceBackendKind::Mock),
+            "parakeet" => Ok(VoiceBackendKind::Parakeet),
+            other => Err(std::io::Error::other(format!(
+                "MIL_VOICE_BACKEND={other:?} not recognized; expected 'mock' or 'parakeet'"
+            ))),
+        },
+    }
+}
+
 /// Drive a `sensorium_voice::VoiceSession` to obtain an utterance.
 ///
-/// v0.2 uses the Mock backend with a canned response sourced from
-/// `MIL_VOICE_MOCK` (or a default placeholder). The real Parakeet
-/// ONNX inference path lands behind `feature = "parakeet"` in the
-/// follow-up that adds parakeet-rs + ort + cpal + hf-hub +
-/// voice_activity_detector to sensorium-voice.
+/// Dispatches on `MIL_VOICE_BACKEND`:
 ///
-/// The wiring is identical: caller calls `feed(chunk)` (no-op for
-/// Mock), `flush()` to consume the canned/transcribed text, and
-/// receives the `PrimitiveToken::Predication` over the channel. v0.2
-/// validates the contract chain end-to-end without real audio
-/// hardware.
+/// - `mock` (default) — synchronous: emits the `MIL_VOICE_MOCK` value
+///   on `flush()`. No mic access. Suitable for CI / scripted demos.
+/// - `parakeet` — opens the default microphone, runs `EnergyVad`
+///   gated audio through Parakeet TDT EOU streaming inference, and
+///   returns the first complete utterance. Requires the binary to
+///   be built with `--features parakeet`.
 fn listen_via_voice() -> std::io::Result<String> {
+    let raw = std::env::var("MIL_VOICE_BACKEND").ok();
+    match parse_voice_backend(raw.as_deref())? {
+        VoiceBackendKind::Mock => listen_via_mock(),
+        VoiceBackendKind::Parakeet => listen_via_parakeet(),
+    }
+}
+
+/// Mock voice path — flushes a canned response immediately.
+fn listen_via_mock() -> std::io::Result<String> {
     let canned = std::env::var("MIL_VOICE_MOCK").unwrap_or_else(|_| "explain this".to_owned());
 
     println!("┌─ MIL voice input · sensorium-voice ──────────────────────────────────────");
-    println!("│ backend: mock (real Parakeet TDT lands behind feature = \"parakeet\")");
+    println!("│ backend: mock");
     println!("│ utterance source: MIL_VOICE_MOCK env var (defaults to 'explain this')");
     println!("│ transcript: {canned}");
     println!("└──────────────────────────────────────────────────────────────────────────");
@@ -482,6 +522,107 @@ fn listen_via_voice() -> std::io::Result<String> {
     }
 }
 
+/// Parakeet voice path. Behind `feature = "parakeet"` so default
+/// builds stay dep-light; without the feature this returns a
+/// helpful error pointing the user at `cargo run --features parakeet`.
+#[cfg(not(feature = "parakeet"))]
+fn listen_via_parakeet() -> std::io::Result<String> {
+    Err(std::io::Error::other(
+        "MIL_VOICE_BACKEND=parakeet, but pneuma-demo was built without `--features parakeet`. \
+         Rebuild with `cargo run -p pneuma-demo --features parakeet` (this links parakeet-rs + ort + \
+         hf-hub and downloads ~150MB of model weights on first run).",
+    ))
+}
+
+/// Parakeet voice path — opens mic, runs `EnergyVad`-gated samples
+/// through Parakeet TDT EOU, returns the first utterance's
+/// transcript. Times out after `MIL_VOICE_TIMEOUT_SECS` seconds
+/// (default 30) to prevent runaway sessions.
+#[cfg(feature = "parakeet")]
+fn listen_via_parakeet() -> std::io::Result<String> {
+    use std::time::{Duration, Instant};
+
+    use ringbuf::traits::Consumer;
+    use sensorium_voice::{AudioCapture, AudioCaptureConfig, EnergyVad, VadGate};
+
+    let timeout_secs: u64 = std::env::var("MIL_VOICE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+
+    let mut session = VoiceSession::new(VoiceConfig::parakeet_default())
+        .map_err(|e| std::io::Error::other(format!("voice session: {e}")))?;
+    let rx = session
+        .tokens()
+        .ok_or_else(|| std::io::Error::other("voice tokens already taken"))?;
+
+    let mut capture = AudioCapture::start(&AudioCaptureConfig::default())
+        .map_err(|e| std::io::Error::other(format!("audio capture: {e}")))?;
+    let mut consumer = capture
+        .consumer()
+        .ok_or_else(|| std::io::Error::other("audio consumer already taken"))?;
+
+    println!("┌─ MIL voice input · sensorium-voice ──────────────────────────────────────");
+    println!("│ backend: parakeet (NVIDIA Parakeet TDT EOU, on-device)");
+    println!("│ device:  {}", capture.device_name());
+    println!("│ source:  {} Hz → 16 kHz", capture.source_sample_rate());
+    println!("│ timeout: {timeout_secs}s (override with MIL_VOICE_TIMEOUT_SECS)");
+    println!("│ speak now…");
+    println!("└──────────────────────────────────────────────────────────────────────────");
+    println!();
+
+    let mut vad = EnergyVad::new();
+    let mut gate = VadGate::new();
+    let mut scratch = [0.0_f32; 1024];
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut first_utterance_seen = false;
+
+    while !first_utterance_seen && Instant::now() < deadline {
+        let n = consumer.pop_slice(&mut scratch);
+        if n == 0 {
+            // No new samples yet; yield to the audio thread instead
+            // of busy-spinning.
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        let utterances = session
+            .run_vad_driven(scratch[..n].iter().copied(), &mut vad, &mut gate)
+            .map_err(|e| std::io::Error::other(format!("vad-driven: {e}")))?;
+        if utterances > 0 {
+            first_utterance_seen = true;
+        }
+    }
+
+    if !first_utterance_seen {
+        // Hit the deadline without VAD closing an utterance — flush
+        // anyway so any in-flight audio surfaces as a Final delta.
+        session
+            .flush()
+            .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+    }
+
+    capture.stop();
+
+    // Drain all tokens; keep the most recent Predication's text. Both
+    // Partial and Final deltas surface as Predications today (the
+    // session emits both); the last one written is the most complete.
+    let mut transcript = String::new();
+    while let Ok(token) = rx.try_recv() {
+        if let PrimitiveToken::Predication(t) = token {
+            transcript = t.value;
+        }
+    }
+    let transcript = transcript.trim().to_owned();
+    if transcript.is_empty() {
+        return Err(std::io::Error::other(
+            "voice session produced an empty transcript (timeout or silence?)",
+        ));
+    }
+    println!("│ transcript: {transcript}");
+    println!();
+    Ok(transcript)
+}
+
 // --- Tempdir helper ---------------------------------------------------------
 
 struct DirAndGuard {
@@ -493,4 +634,78 @@ fn tempdir_for_journal() -> std::io::Result<DirAndGuard> {
     let guard = tempfile::tempdir()?;
     let path = guard.path().to_path_buf();
     Ok(DirAndGuard { path, guard })
+}
+
+// --- Tests -----------------------------------------------------------------
+//
+// Kept at the bottom of the file so `clippy::items_after_test_module`
+// stays happy.
+
+#[cfg(test)]
+mod tests {
+    use super::{VoiceBackendKind, parse_voice_backend};
+
+    #[test]
+    fn unset_defaults_to_mock() {
+        assert_eq!(parse_voice_backend(None).unwrap(), VoiceBackendKind::Mock);
+    }
+
+    #[test]
+    fn empty_string_defaults_to_mock() {
+        assert_eq!(
+            parse_voice_backend(Some("")).unwrap(),
+            VoiceBackendKind::Mock
+        );
+        assert_eq!(
+            parse_voice_backend(Some("   ")).unwrap(),
+            VoiceBackendKind::Mock
+        );
+    }
+
+    #[test]
+    fn mock_value_returns_mock() {
+        assert_eq!(
+            parse_voice_backend(Some("mock")).unwrap(),
+            VoiceBackendKind::Mock
+        );
+    }
+
+    #[test]
+    fn parakeet_value_returns_parakeet() {
+        assert_eq!(
+            parse_voice_backend(Some("parakeet")).unwrap(),
+            VoiceBackendKind::Parakeet
+        );
+    }
+
+    #[test]
+    fn case_insensitive_matching() {
+        assert_eq!(
+            parse_voice_backend(Some("PARAKEET")).unwrap(),
+            VoiceBackendKind::Parakeet
+        );
+        assert_eq!(
+            parse_voice_backend(Some("Mock")).unwrap(),
+            VoiceBackendKind::Mock
+        );
+    }
+
+    #[test]
+    fn whitespace_is_trimmed() {
+        assert_eq!(
+            parse_voice_backend(Some("  parakeet  ")).unwrap(),
+            VoiceBackendKind::Parakeet
+        );
+    }
+
+    #[test]
+    fn unknown_value_errors_with_guidance() {
+        let err = parse_voice_backend(Some("whisper")).expect_err("must error");
+        let msg = err.to_string();
+        assert!(msg.contains("whisper"), "must mention bad value: {msg}");
+        assert!(
+            msg.contains("mock") && msg.contains("parakeet"),
+            "must list valid choices: {msg}"
+        );
+    }
 }
