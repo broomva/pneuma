@@ -55,6 +55,26 @@ MIL_VOICE_INPUT=1 MIL_VOICE_BACKEND=parakeet \
 `MIL_VOICE_TIMEOUT_SECS` (default 30) caps how long the parakeet path
 waits for the first utterance before giving up.
 
+#### Streaming output (parakeet)
+
+The parakeet path drains `VoiceSession::streaming_tokens()` — the
+generation-tagged substrate from `sensorium-core` — and renders each
+update live on stderr:
+
+```text
+│ partial (gen=0): rename
+│ partial (gen=0): rename it  →  file.rename
+│ partial (gen=0): rename it to alpha dot txt  →  file.rename
+│ FINAL (gen=0): rename it to alpha dot txt
+```
+
+Each `partial` line shows the running transcript at that generation;
+the `→  file.rename` suffix appears when the partial is already
+parseable, proving the parser layer reacts to partials, not just on
+final. `FINAL` lands when the VAD closes the utterance — the demo
+then dispatches the directive as usual. `Generation` increments per
+utterance, so a multi-utterance session shows `gen=1`, `gen=2`, etc.
+
 ## What it is NOT
 
 - Not a production application. Everything is a single-process

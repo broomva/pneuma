@@ -535,15 +535,30 @@ fn listen_via_parakeet() -> std::io::Result<String> {
 }
 
 /// Parakeet voice path — opens mic, runs `EnergyVad`-gated samples
-/// through Parakeet TDT EOU, returns the first utterance's
-/// transcript. Times out after `MIL_VOICE_TIMEOUT_SECS` seconds
-/// (default 30) to prevent runaway sessions.
+/// through Parakeet TDT EOU streaming inference, drains the
+/// generation-tagged `streaming_tokens()` channel, returns the first
+/// utterance's transcript.
+///
+/// **Realtime feel**: partials surface on stderr as Parakeet emits
+/// them (every ~160ms during speech), tagged with their `Generation`.
+/// A speculative parse runs on each new partial and (if successful)
+/// the would-be directive's act id renders inline — proves the
+/// parser chain reacts to partials live, not just on final.
+///
+/// Final commits → caller dispatches as usual.
+/// Cancelled → returns error (barge-in wiring is a future PR).
+///
+/// Times out after `MIL_VOICE_TIMEOUT_SECS` seconds (default 30).
 #[cfg(feature = "parakeet")]
 fn listen_via_parakeet() -> std::io::Result<String> {
     use std::time::{Duration, Instant};
 
+    use pneuma_acts::ActRegistry;
     use ringbuf::traits::Consumer;
+    use sensorium_core::StreamUpdate;
     use sensorium_voice::{AudioCapture, AudioCaptureConfig, EnergyVad, VadGate};
+
+    use pneuma_demo::parse_utterance;
 
     let timeout_secs: u64 = std::env::var("MIL_VOICE_TIMEOUT_SECS")
         .ok()
@@ -552,9 +567,13 @@ fn listen_via_parakeet() -> std::io::Result<String> {
 
     let mut session = VoiceSession::new(VoiceConfig::parakeet_default())
         .map_err(|e| std::io::Error::other(format!("voice session: {e}")))?;
-    let rx = session
-        .tokens()
-        .ok_or_else(|| std::io::Error::other("voice tokens already taken"))?;
+    let stream_rx = session
+        .streaming_tokens()
+        .ok_or_else(|| std::io::Error::other("voice streaming_tokens already taken"))?;
+    // Drop the legacy token receiver — the streaming path owns the
+    // delta-rendering responsibility, and we don't want the channel to
+    // back-pressure the session on its bounded buffer.
+    let _ = session.tokens();
 
     let mut capture = AudioCapture::start(&AudioCaptureConfig::default())
         .map_err(|e| std::io::Error::other(format!("audio capture: {e}")))?;
@@ -562,65 +581,93 @@ fn listen_via_parakeet() -> std::io::Result<String> {
         .consumer()
         .ok_or_else(|| std::io::Error::other("audio consumer already taken"))?;
 
-    println!("┌─ MIL voice input · sensorium-voice ──────────────────────────────────────");
+    println!("┌─ MIL voice input · sensorium-voice (streaming) ─────────────────────────");
     println!("│ backend: parakeet (NVIDIA Parakeet TDT EOU, on-device)");
     println!("│ device:  {}", capture.device_name());
     println!("│ source:  {} Hz → 16 kHz", capture.source_sample_rate());
     println!("│ timeout: {timeout_secs}s (override with MIL_VOICE_TIMEOUT_SECS)");
     println!("│ speak now…");
-    println!("└──────────────────────────────────────────────────────────────────────────");
+    println!("└─────────────────────────────────────────────────────────────────────────");
     println!();
 
     let mut vad = EnergyVad::new();
     let mut gate = VadGate::new();
     let mut scratch = [0.0_f32; 1024];
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let mut first_utterance_seen = false;
+    let registry = ActRegistry::canonical();
+    let mut last_partial_rendered = String::new();
+    let mut flushed_on_timeout = false;
 
-    while !first_utterance_seen && Instant::now() < deadline {
+    loop {
+        // 1. Drain any streaming updates that arrived since last iteration.
+        //    We do this BEFORE feeding more audio so the user sees
+        //    partials at the earliest moment.
+        loop {
+            match stream_rx.try_recv() {
+                Ok(StreamUpdate::Partial { generation, value }) => {
+                    let text = value.text();
+                    if text != last_partial_rendered {
+                        let speculative_marker = match parse_utterance(text, &registry) {
+                            Ok(parsed) => format!("  →  {}", parsed.act_id.as_str()),
+                            Err(_) => String::new(),
+                        };
+                        eprintln!("│ partial (gen={generation}): {text}{speculative_marker}");
+                        last_partial_rendered.clear();
+                        last_partial_rendered.push_str(text);
+                    }
+                }
+                Ok(StreamUpdate::Final { generation, value }) => {
+                    let text = value.text().trim().to_owned();
+                    if text.is_empty() {
+                        eprintln!("│ FINAL (gen={generation}): <empty>");
+                        capture.stop();
+                        return Err(std::io::Error::other(
+                            "voice session produced an empty transcript",
+                        ));
+                    }
+                    eprintln!("│ FINAL (gen={generation}): {text}");
+                    eprintln!();
+                    capture.stop();
+                    return Ok(text);
+                }
+                Ok(StreamUpdate::Cancelled { generation }) => {
+                    eprintln!("│ cancelled (gen={generation})");
+                    capture.stop();
+                    return Err(std::io::Error::other("voice session cancelled"));
+                }
+                Err(_) => break, // channel empty; resume the audio loop
+            }
+        }
+
+        // 2. Check timeout. If we've exhausted it without a Final,
+        //    force-flush so any in-flight audio surfaces as a Final
+        //    delta and we drain it on the next iteration.
+        if Instant::now() >= deadline {
+            if flushed_on_timeout {
+                capture.stop();
+                return Err(std::io::Error::other(
+                    "voice session timed out without producing a Final transcript \
+                     (try MIL_VOICE_TIMEOUT_SECS=<longer>)",
+                ));
+            }
+            session
+                .flush()
+                .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+            flushed_on_timeout = true;
+            continue; // next iteration drains the post-flush Final
+        }
+
+        // 3. Drain audio samples and feed VAD-driven session.
         let n = consumer.pop_slice(&mut scratch);
         if n == 0 {
-            // No new samples yet; yield to the audio thread instead
-            // of busy-spinning.
+            // No new samples yet — yield instead of busy-spinning.
             std::thread::sleep(Duration::from_millis(20));
             continue;
         }
-        let utterances = session
+        session
             .run_vad_driven(scratch[..n].iter().copied(), &mut vad, &mut gate)
             .map_err(|e| std::io::Error::other(format!("vad-driven: {e}")))?;
-        if utterances > 0 {
-            first_utterance_seen = true;
-        }
     }
-
-    if !first_utterance_seen {
-        // Hit the deadline without VAD closing an utterance — flush
-        // anyway so any in-flight audio surfaces as a Final delta.
-        session
-            .flush()
-            .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
-    }
-
-    capture.stop();
-
-    // Drain all tokens; keep the most recent Predication's text. Both
-    // Partial and Final deltas surface as Predications today (the
-    // session emits both); the last one written is the most complete.
-    let mut transcript = String::new();
-    while let Ok(token) = rx.try_recv() {
-        if let PrimitiveToken::Predication(t) = token {
-            transcript = t.value;
-        }
-    }
-    let transcript = transcript.trim().to_owned();
-    if transcript.is_empty() {
-        return Err(std::io::Error::other(
-            "voice session produced an empty transcript (timeout or silence?)",
-        ));
-    }
-    println!("│ transcript: {transcript}");
-    println!();
-    Ok(transcript)
 }
 
 // --- Tempdir helper ---------------------------------------------------------
