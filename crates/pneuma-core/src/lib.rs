@@ -49,6 +49,14 @@
 //! bridge crate will provide `From`/`Into` impls. The wire format is
 //! byte-identical today.
 //!
+//! [`provenance::Generation`] is similarly byte-compatible with
+//! `sensorium_core::Generation` (both wrap a `u64`, both serialize
+//! transparently). Carried on `Directive` when the directive
+//! originated from a streaming substrate (voice STT, BCI, gaze).
+//! Cross-crate conversion lives in `pneuma-resolver`'s
+//! `bridge_generation` helper (orphan rule forces it out of either
+//! core crate).
+//!
 //! Similarly, [`referent::AppId`], [`referent::WindowId`],
 //! [`referent::FileRef`], [`referent::SymbolRef`], and
 //! [`referent::SelectionRef`] mirror the structurally-equivalent types
@@ -86,7 +94,9 @@ pub use modifier::{Modifier, ModifierKind, TimeWindowSpec};
 pub use policy::{
     BlastRadius, ExecutorKind, PolicyEnvelope, RedactionRule, Reversibility, Timestamp,
 };
-pub use provenance::{BindingKind, ContextRef, ContextSnapshotId, Provenance, Tagged, TokenRef};
+pub use provenance::{
+    BindingKind, ContextRef, ContextSnapshotId, Generation, Provenance, Tagged, TokenRef,
+};
 pub use referent::{
     AnaphorRef, AppId, FileRef, ReferentType, ReferentValue, SelectionRef, SpatialAnchor,
     SymbolRef, TextSpan, WindowId,
