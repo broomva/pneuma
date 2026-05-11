@@ -549,14 +549,30 @@ fn listen_via_parakeet() -> std::io::Result<String> {
 /// Cancelled → returns error (barge-in wiring is a future PR).
 ///
 /// Times out after `MIL_VOICE_TIMEOUT_SECS` seconds (default 30).
+///
+/// ## Diagnostics
+///
+/// Set `MIL_VOICE_TRACE=1` to enable per-chunk runtime tracing:
+/// - audio drain (sample count + RMS per consumer pop)
+/// - VAD probability per chunk (running statistics + the chunk's
+///   peak/mean amplitude)
+/// - gate state transitions (Idle → Speaking → Idle)
+/// - backend feed/flush events
+///
+/// The trace is opt-in because it's noisy (~30 lines per second of
+/// audio) but invaluable for diagnosing "why didn't my voice
+/// register" — typically a mic gain / VAD threshold mismatch.
 #[cfg(feature = "parakeet")]
+#[allow(clippy::too_many_lines)] // diagnostic inline loop is intentionally explicit
 fn listen_via_parakeet() -> std::io::Result<String> {
     use std::time::{Duration, Instant};
 
     use pneuma_acts::ActRegistry;
     use ringbuf::traits::Consumer;
     use sensorium_core::StreamUpdate;
-    use sensorium_voice::{AudioCapture, AudioCaptureConfig, EnergyVad, VadGate};
+    use sensorium_voice::{
+        AudioCapture, AudioCaptureConfig, EnergyVad, VadEvent, VadGate, VadModel,
+    };
 
     use pneuma_demo::parse_utterance;
 
@@ -564,6 +580,7 @@ fn listen_via_parakeet() -> std::io::Result<String> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(30);
+    let trace = std::env::var("MIL_VOICE_TRACE").is_ok();
 
     let mut session = VoiceSession::new(VoiceConfig::parakeet_default())
         .map_err(|e| std::io::Error::other(format!("voice session: {e}")))?;
@@ -586,22 +603,29 @@ fn listen_via_parakeet() -> std::io::Result<String> {
     println!("│ device:  {}", capture.device_name());
     println!("│ source:  {} Hz → 16 kHz", capture.source_sample_rate());
     println!("│ timeout: {timeout_secs}s (override with MIL_VOICE_TIMEOUT_SECS)");
+    if trace {
+        println!("│ trace:   ON (MIL_VOICE_TRACE=1)");
+    }
     println!("│ speak now…");
     println!("└─────────────────────────────────────────────────────────────────────────");
     println!();
 
     let mut vad = EnergyVad::new();
     let mut gate = VadGate::new();
+    let vad_chunk_size = vad.chunk_size();
+    let mut vad_buffer: Vec<f32> = Vec::with_capacity(vad_chunk_size * 2);
     let mut scratch = [0.0_f32; 1024];
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let registry = ActRegistry::canonical();
     let mut last_partial_rendered = String::new();
     let mut flushed_on_timeout = false;
+    let mut total_samples_received: u64 = 0;
+    let mut total_vad_chunks: u64 = 0;
+    let mut max_rms_seen: f32 = 0.0;
+    let mut last_trace_at = Instant::now();
 
     loop {
         // 1. Drain any streaming updates that arrived since last iteration.
-        //    We do this BEFORE feeding more audio so the user sees
-        //    partials at the earliest moment.
         loop {
             match stream_rx.try_recv() {
                 Ok(StreamUpdate::Partial { generation, value }) => {
@@ -618,8 +642,23 @@ fn listen_via_parakeet() -> std::io::Result<String> {
                 }
                 Ok(StreamUpdate::Final { generation, value }) => {
                     let text = value.text().trim().to_owned();
+                    if trace {
+                        eprintln!(
+                            "│ [trace] session summary: total_samples={total_samples_received} \
+                             vad_chunks={total_vad_chunks} max_rms={max_rms_seen:.4}"
+                        );
+                    }
                     if text.is_empty() {
                         eprintln!("│ FINAL (gen={generation}): <empty>");
+                        if !trace && max_rms_seen < vad_silence_floor_default() {
+                            eprintln!(
+                                "│ hint: peak audio RMS over the whole session was \
+                                 {max_rms_seen:.4} (< silence_floor 0.003). The mic \
+                                 likely received no audible signal. Try a different \
+                                 input device or rerun with MIL_VOICE_TRACE=1 to \
+                                 see per-chunk values."
+                            );
+                        }
                         capture.stop();
                         return Err(std::io::Error::other(
                             "voice session produced an empty transcript",
@@ -639,35 +678,134 @@ fn listen_via_parakeet() -> std::io::Result<String> {
             }
         }
 
-        // 2. Check timeout. If we've exhausted it without a Final,
-        //    force-flush so any in-flight audio surfaces as a Final
-        //    delta and we drain it on the next iteration.
+        // 2. Check timeout.
         if Instant::now() >= deadline {
             if flushed_on_timeout {
+                if trace {
+                    eprintln!(
+                        "│ [trace] session summary: total_samples={total_samples_received} \
+                         vad_chunks={total_vad_chunks} max_rms={max_rms_seen:.4} \
+                         (timed out)"
+                    );
+                }
                 capture.stop();
                 return Err(std::io::Error::other(
                     "voice session timed out without producing a Final transcript \
                      (try MIL_VOICE_TIMEOUT_SECS=<longer>)",
                 ));
             }
+            if trace {
+                eprintln!(
+                    "│ [trace] deadline reached without SpeechEnd; force-flushing. \
+                     total_samples={total_samples_received} vad_chunks={total_vad_chunks} \
+                     max_rms={max_rms_seen:.4}"
+                );
+            }
             session
                 .flush()
                 .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
             flushed_on_timeout = true;
-            continue; // next iteration drains the post-flush Final
+            continue;
         }
 
-        // 3. Drain audio samples and feed VAD-driven session.
+        // 3. Drain audio samples.
         let n = consumer.pop_slice(&mut scratch);
         if n == 0 {
-            // No new samples yet — yield instead of busy-spinning.
             std::thread::sleep(Duration::from_millis(20));
             continue;
         }
-        session
-            .run_vad_driven(scratch[..n].iter().copied(), &mut vad, &mut gate)
-            .map_err(|e| std::io::Error::other(format!("vad-driven: {e}")))?;
+        total_samples_received += n as u64;
+
+        // Periodic trace: at most every 250ms while running.
+        if trace && last_trace_at.elapsed() >= Duration::from_millis(250) {
+            let rms = chunk_rms(&scratch[..n]);
+            max_rms_seen = max_rms_seen.max(rms);
+            eprintln!(
+                "│ [trace] audio popped: n={n} rms={rms:.4} \
+                 total_samples={total_samples_received} max_rms={max_rms_seen:.4} \
+                 gate={}",
+                if gate.is_speaking() {
+                    "Speaking"
+                } else {
+                    "Idle"
+                }
+            );
+            last_trace_at = Instant::now();
+        } else {
+            // Still track max RMS even when not tracing, for the
+            // post-empty-Final diagnostic hint.
+            let rms = chunk_rms(&scratch[..n]);
+            max_rms_seen = max_rms_seen.max(rms);
+        }
+
+        // 4. Inline VAD loop — replaces `run_vad_driven`. Gives us
+        //    per-chunk visibility into VAD probability + gate state
+        //    when `MIL_VOICE_TRACE=1`.
+        vad_buffer.extend_from_slice(&scratch[..n]);
+        while vad_buffer.len() >= vad_chunk_size {
+            let chunk: Vec<f32> = vad_buffer.drain(..vad_chunk_size).collect();
+            let probability = vad
+                .predict(&chunk)
+                .map_err(|e| std::io::Error::other(format!("vad predict: {e}")))?;
+            total_vad_chunks += 1;
+
+            let was_speaking = gate.is_speaking();
+            if was_speaking {
+                session
+                    .feed(&chunk)
+                    .map_err(|e| std::io::Error::other(format!("voice feed: {e}")))?;
+            }
+            match gate.observe(probability) {
+                Some(VadEvent::SpeechStart) => {
+                    eprintln!("│ [vad] SpeechStart (probability={probability:.3})");
+                    session
+                        .feed(&chunk)
+                        .map_err(|e| std::io::Error::other(format!("voice feed: {e}")))?;
+                }
+                Some(VadEvent::SpeechEnd) => {
+                    eprintln!("│ [vad] SpeechEnd (probability={probability:.3}) — flushing");
+                    session
+                        .flush()
+                        .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+                }
+                None => {
+                    if trace && (was_speaking || probability > 0.1) {
+                        // Only log when there's something interesting:
+                        // either we're actively speaking, or the
+                        // probability is non-trivial.
+                        eprintln!(
+                            "│ [vad] probability={probability:.3} gate={}",
+                            if was_speaking { "Speaking" } else { "Idle" }
+                        );
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Compute root-mean-square amplitude over a chunk of `f32` audio
+/// samples. Matches `EnergyVad`'s computation so the diagnostic
+/// hint stays self-consistent.
+#[cfg(feature = "parakeet")]
+fn chunk_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f64 = samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+    #[allow(clippy::cast_precision_loss)]
+    let mean_sq = sum_sq / (samples.len() as f64);
+    #[allow(clippy::cast_possible_truncation)]
+    let rms = mean_sq.sqrt() as f32;
+    rms
+}
+
+/// `EnergyVad`'s default silence floor (~-50dB peak f32). Mirrors the
+/// constant inside `sensorium-voice::EnergyVad::new`. Used only for
+/// the empty-Final diagnostic hint.
+#[cfg(feature = "parakeet")]
+const fn vad_silence_floor_default() -> f32 {
+    0.003
 }
 
 // --- Tempdir helper ---------------------------------------------------------
