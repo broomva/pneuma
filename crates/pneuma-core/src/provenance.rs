@@ -122,6 +122,55 @@ impl BindingKind {
     }
 }
 
+// --- Generation --------------------------------------------------------------
+
+/// Monotonic stream-update generation, mirroring
+/// `sensorium_core::Generation`.
+///
+/// Carried on [`crate::Directive`] when the directive originated from a
+/// streaming substrate (voice STT, BCI, future gaze). Lets downstream
+/// stages route on a stable per-utterance identity: speculative
+/// directives derived from a `Partial` transcript share the source
+/// generation, so a `Cancelled(g)` on the producer stream cleanly
+/// drops every directive tagged with `g`.
+///
+/// **Wire-compatible with `sensorium_core::Generation`.** Both crates
+/// wrap a `u64` and serialize transparently as a bare number. The
+/// orphan rule prevents `From` impls in either crate; the bridge
+/// function `bridge_generation` in `pneuma-resolver` (which depends on
+/// both) does the conversion explicitly.
+///
+/// Not `#[non_exhaustive]` — this is a value newtype. Adding fields
+/// would be a breaking change anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Generation(u64);
+
+impl Generation {
+    /// The first generation a fresh producer mints. Matches
+    /// `sensorium_core::Generation::INITIAL`.
+    pub const INITIAL: Self = Self(0);
+
+    /// Construct from a raw counter. Intended for tests, replay, and
+    /// the cross-substrate bridge in `pneuma-resolver`.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Raw counter value.
+    #[must_use]
+    pub const fn into_inner(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Generation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 // --- ContextSnapshotId -------------------------------------------------------
 
 /// `UUIDv7` newtype identifying a workspace snapshot the directive was

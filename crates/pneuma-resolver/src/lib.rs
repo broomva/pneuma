@@ -304,3 +304,28 @@ pub fn is_deictic_surface(s: &str) -> bool {
 fn file_ref_from_sensorium(f: &sensorium_core::FileRef) -> FileRef {
     FileRef::new(f.path.clone())
 }
+
+// --- Cross-crate Generation bridge -----------------------------------------
+
+/// Bridge a `sensorium_core::Generation` to a `pneuma_core::Generation`.
+///
+/// Both types are `u64` newtypes that serialize transparently, but
+/// they live in different crates and Rust's orphan rule forbids
+/// `From`/`Into` impls in either core crate (the trait and both
+/// types would be foreign in either site). `pneuma-resolver` depends
+/// on both, so the bridge lives here as a free function.
+///
+/// Use this at the seam where a streaming substrate emits voice
+/// `StreamUpdate<TranscriptDelta>`s tagged with
+/// `sensorium_core::Generation`, and you want to attach the same
+/// generation to the derived `Directive<Composing>`:
+///
+/// ```rust,ignore
+/// // generation arrives from sensorium_voice::VoiceSession::current_generation()
+/// let directive = parse_to_directive(&transcript)
+///     .with_generation(pneuma_resolver::bridge_generation(generation));
+/// ```
+#[must_use]
+pub fn bridge_generation(g: sensorium_core::Generation) -> pneuma_core::Generation {
+    pneuma_core::Generation::new(g.into_inner())
+}

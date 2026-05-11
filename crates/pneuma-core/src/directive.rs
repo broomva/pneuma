@@ -38,7 +38,7 @@ use crate::confidence::Confidence;
 use crate::error::ContractError;
 use crate::modifier::Modifier;
 use crate::policy::PolicyEnvelope;
-use crate::provenance::{ContextRef, TokenRef};
+use crate::provenance::{ContextRef, Generation, TokenRef};
 
 // --- DirectiveId -------------------------------------------------------------
 
@@ -185,9 +185,36 @@ pub struct Directive<S> {
     /// Wall-clock commit time. `None` until `Committed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed_at: Option<DateTime<Utc>>,
+    /// Stream generation that produced this directive, when the
+    /// directive originated from a streaming substrate (voice STT,
+    /// BCI, gaze). `None` for non-streaming construction paths
+    /// (typed utterance, gesture-only).
+    ///
+    /// Wire-compatible with `sensorium_core::Generation`. Carried
+    /// through every state transition so downstream stages can
+    /// route on a stable per-utterance identity — a `Cancelled(g)`
+    /// on the source stream drops every directive tagged with `g`.
+    ///
+    /// See [`Directive::with_generation`] (Composing path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<Generation>,
     /// Phantom — the typestate.
     #[serde(skip)]
     _state: PhantomData<S>,
+}
+
+// --- Generic accessor --------------------------------------------------------
+
+impl<S> Directive<S> {
+    /// The stream generation that produced this directive, if any.
+    ///
+    /// Available in every typestate. Set on `Composing` via
+    /// [`Directive::with_generation`]; propagated unchanged through
+    /// every transition.
+    #[must_use]
+    pub fn generation(&self) -> Option<Generation> {
+        self.generation
+    }
 }
 
 // --- Composing impl ----------------------------------------------------------
@@ -210,8 +237,24 @@ impl Directive<Composing> {
             state: DirectiveState::Composing,
             created_at: Utc::now(),
             committed_at: None,
+            generation: None,
             _state: PhantomData,
         }
+    }
+
+    /// Attach the stream [`Generation`] that produced this directive.
+    ///
+    /// Used by streaming substrates (voice STT, BCI, gaze) to mark
+    /// the directive's source utterance. Propagates unchanged through
+    /// every state transition; downstream stages can drop derived
+    /// work tagged with this generation when the producer emits a
+    /// `Cancelled(g)`.
+    ///
+    /// For non-streaming construction (typed `MIL_UTTERANCE`,
+    /// programmatic), leave it unset — the field stays `None`.
+    pub fn with_generation(mut self, generation: Generation) -> Self {
+        self.generation = Some(generation);
+        self
     }
 
     /// Add a modifier in-place.
@@ -337,6 +380,7 @@ impl Directive<Composing> {
             state: self.state,
             created_at: self.created_at,
             committed_at: self.committed_at,
+            generation: self.generation,
             _state: PhantomData,
         })
     }
@@ -381,6 +425,7 @@ impl Directive<Ready> {
             state: self.state,
             created_at: self.created_at,
             committed_at: self.committed_at,
+            generation: self.generation,
             _state: PhantomData,
         }
     }
@@ -404,6 +449,7 @@ impl Directive<Ready> {
             state: self.state,
             created_at: self.created_at,
             committed_at: self.committed_at,
+            generation: self.generation,
             _state: PhantomData,
         }
     }
@@ -429,6 +475,7 @@ impl Directive<Proposed> {
             state: DirectiveState::Ready,
             created_at: self.created_at,
             committed_at: self.committed_at,
+            generation: self.generation,
             _state: PhantomData,
         };
         ready.commit_unchecked()
@@ -455,6 +502,7 @@ impl Directive<Proposed> {
             state: self.state,
             created_at: self.created_at,
             committed_at: self.committed_at,
+            generation: self.generation,
             _state: PhantomData,
         }
     }
