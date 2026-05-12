@@ -55,6 +55,66 @@ MIL_VOICE_INPUT=1 MIL_VOICE_BACKEND=parakeet \
 `MIL_VOICE_TIMEOUT_SECS` (default 30) caps how long the parakeet path
 waits for the first utterance before giving up.
 
+#### Streaming output (parakeet)
+
+The parakeet path drains `VoiceSession::streaming_tokens()` — the
+generation-tagged substrate from `sensorium-core` — and renders each
+update live on stderr:
+
+```text
+│ partial (gen=0): rename
+│ partial (gen=0): rename it  →  file.rename
+│ partial (gen=0): rename it to alpha dot txt  →  file.rename
+│ FINAL (gen=0): rename it to alpha dot txt
+```
+
+Each `partial` line shows the running transcript at that generation;
+the `→  file.rename` suffix appears when the partial is already
+parseable, proving the parser layer reacts to partials, not just on
+final. `FINAL` lands when the VAD closes the utterance — the demo
+then dispatches the directive as usual. `Generation` increments per
+utterance, so a multi-utterance session shows `gen=1`, `gen=2`, etc.
+
+#### Recording-based validation (`MIL_VOICE_INPUT_FILE`)
+
+For reproducible engine validation without a microphone, feed audio
+from a WAV file:
+
+```sh
+# Generate a test recording with macOS `say` (any TTS works):
+say -v Alex -r 140 "Rename it to alpha." -o /tmp/test.aiff
+afconvert /tmp/test.aiff /tmp/test.wav -d LEI16@16000 -f WAVE -c 1
+
+# Pipe it through the engine — same trace + streaming path as live mic:
+MIL_VOICE_INPUT=1 MIL_VOICE_BACKEND=parakeet \
+  MIL_VOICE_INPUT_FILE=/tmp/test.wav \
+  cargo run -p pneuma-demo --features parakeet --release
+```
+
+The WAV must be PCM mono; sample rate is auto-resampled to 16 kHz.
+Supports i16/i24/i32/f32 sample formats (hound-decoded). Bypasses
+cpal entirely — same VAD → Parakeet → streaming partials → Final
+chain, but the audio source is a file instead of a microphone.
+
+Use this for:
+- Regression-testing the engine against a fixed corpus
+- Debugging a specific transcription without re-recording
+- CI integration tests (deterministic input → deterministic output)
+- Iterating on substrate changes without ambient noise
+
+#### Diagnostics (`MIL_VOICE_TRACE`)
+
+For per-chunk runtime diagnostics on either the mic or WAV path:
+
+```sh
+MIL_VOICE_TRACE=1 cargo run -p pneuma-demo --features parakeet --release
+```
+
+Surfaces audio RMS, VAD probabilities, gate transitions, and feed/flush
+events on stderr. Invaluable for diagnosing "why didn't my voice
+register" (usually a mic gain / VAD threshold mismatch) or "why is
+Parakeet not transcribing" (usually too-short audio or audio quality).
+
 ## What it is NOT
 
 - Not a production application. Everything is a single-process
