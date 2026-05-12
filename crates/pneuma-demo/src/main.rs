@@ -34,6 +34,13 @@
 //!   to be built with `--features parakeet`).
 //! - `MIL_VOICE_MOCK` — canned response when `MIL_VOICE_BACKEND=mock`
 //!   (default `"explain this"`).
+//! - `MIL_VOICE_INPUT_FILE` — when `MIL_VOICE_BACKEND=parakeet`, feed
+//!   audio from this WAV file instead of the mic. The file must be
+//!   PCM mono (resampled internally to 16 kHz if needed). Bypasses
+//!   cpal entirely — reproducible engine validation without
+//!   hardware. Format: anything `hound` can decode (i16, i32, f32).
+//! - `MIL_VOICE_TRACE` — enable per-chunk diagnostic output (audio
+//!   RMS, VAD probabilities, gate transitions, feed/flush events).
 //! - `MIL_AGENT_COMMAND` — override the agent CLI command (default `claude`).
 //! - `MIL_AGENT_ARGS` — comma-separated args (default `--print`).
 //!
@@ -576,6 +583,13 @@ fn listen_via_parakeet() -> std::io::Result<String> {
 
     use pneuma_demo::parse_utterance;
 
+    // File-input early dispatch: when MIL_VOICE_INPUT_FILE is set,
+    // bypass cpal entirely and feed audio from a WAV file. Lets us
+    // validate the engine deterministically without a microphone.
+    if let Ok(path) = std::env::var("MIL_VOICE_INPUT_FILE") {
+        return listen_via_parakeet_file(std::path::Path::new(&path));
+    }
+
     let timeout_secs: u64 = std::env::var("MIL_VOICE_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -806,6 +820,295 @@ fn chunk_rms(samples: &[f32]) -> f32 {
 #[cfg(feature = "parakeet")]
 const fn vad_silence_floor_default() -> f32 {
     0.003
+}
+
+/// File-input variant of `listen_via_parakeet`: read a WAV from disk
+/// and feed its samples through the same engine pipeline (VAD →
+/// Parakeet → streaming partials → Final). Bypasses cpal entirely.
+///
+/// This is the **reproducible** validation path — same WAV → same
+/// trace → same Final transcript across runs. Critical for
+/// regression testing the engine without depending on mic hardware
+/// or environmental noise.
+///
+/// The WAV must be PCM mono. Sample rate is auto-resampled to
+/// 16 kHz (the rate Parakeet + EnergyVad expect) using a simple
+/// linear interpolator. Supports any sample format `hound` decodes
+/// (i16/i24/i32/f32).
+///
+/// Honors the same env vars as the mic path: `MIL_VOICE_TRACE` for
+/// per-chunk diagnostics. `MIL_VOICE_TIMEOUT_SECS` is ignored (no
+/// timeout — we just process the whole file).
+#[cfg(feature = "parakeet")]
+#[allow(clippy::too_many_lines)]
+fn listen_via_parakeet_file(path: &std::path::Path) -> std::io::Result<String> {
+    use pneuma_acts::ActRegistry;
+    use sensorium_core::StreamUpdate;
+    use sensorium_voice::{EnergyVad, VadEvent, VadGate, VadModel};
+
+    use pneuma_demo::parse_utterance;
+
+    let trace = std::env::var("MIL_VOICE_TRACE").is_ok();
+
+    println!("┌─ MIL voice input · sensorium-voice (streaming, WAV replay) ─────────────");
+    println!("│ backend: parakeet (NVIDIA Parakeet TDT EOU, on-device)");
+    println!("│ source:  {}", path.display());
+
+    let samples = read_wav_to_16k_mono(path)?;
+    // Sample count fits easily in f32 for any reasonable audio
+    // duration (~24h at 16 kHz still fits).
+    #[allow(clippy::cast_precision_loss)]
+    let duration_secs = samples.len() as f32 / 16_000.0;
+    println!(
+        "│ samples: {} @ 16 kHz ({duration_secs:.2}s of audio)",
+        samples.len()
+    );
+    if trace {
+        println!("│ trace:   ON (MIL_VOICE_TRACE=1)");
+    }
+    println!("└─────────────────────────────────────────────────────────────────────────");
+    println!();
+
+    let mut session = VoiceSession::new(VoiceConfig::parakeet_default())
+        .map_err(|e| std::io::Error::other(format!("voice session: {e}")))?;
+    let stream_rx = session
+        .streaming_tokens()
+        .ok_or_else(|| std::io::Error::other("voice streaming_tokens already taken"))?;
+    let _ = session.tokens();
+
+    let mut vad = EnergyVad::new();
+    let mut gate = VadGate::new();
+    let vad_chunk_size = vad.chunk_size();
+    let mut vad_buffer: Vec<f32> = Vec::with_capacity(vad_chunk_size * 2);
+    let registry = ActRegistry::canonical();
+    let mut last_partial_rendered = String::new();
+    let mut total_vad_chunks: u64 = 0;
+    let mut max_rms_seen: f32 = 0.0;
+
+    // Process the WAV in 1024-sample slices to mirror the mic
+    // consumer's pop_slice cadence — same VAD chunking + same
+    // partial-render granularity.
+    for batch in samples.chunks(1024) {
+        // Drain any streaming updates that arrived since the last batch.
+        loop {
+            match stream_rx.try_recv() {
+                Ok(StreamUpdate::Partial { generation, value }) => {
+                    let text = value.text();
+                    if text != last_partial_rendered {
+                        let marker = match parse_utterance(text, &registry) {
+                            Ok(parsed) => format!("  →  {}", parsed.act_id.as_str()),
+                            Err(_) => String::new(),
+                        };
+                        eprintln!("│ partial (gen={generation}): {text}{marker}");
+                        last_partial_rendered.clear();
+                        last_partial_rendered.push_str(text);
+                    }
+                }
+                Ok(StreamUpdate::Final { generation, value }) => {
+                    let text = value.text().trim().to_owned();
+                    if trace {
+                        eprintln!(
+                            "│ [trace] session summary: vad_chunks={total_vad_chunks} \
+                             max_rms={max_rms_seen:.4}"
+                        );
+                    }
+                    if text.is_empty() {
+                        eprintln!("│ FINAL (gen={generation}): <empty>");
+                        return Err(std::io::Error::other(
+                            "voice session produced an empty transcript from WAV input",
+                        ));
+                    }
+                    eprintln!("│ FINAL (gen={generation}): {text}");
+                    eprintln!();
+                    return Ok(text);
+                }
+                Ok(StreamUpdate::Cancelled { generation }) => {
+                    eprintln!("│ cancelled (gen={generation})");
+                    return Err(std::io::Error::other("voice session cancelled"));
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Track max RMS for diagnostics.
+        let rms = chunk_rms(batch);
+        max_rms_seen = max_rms_seen.max(rms);
+
+        // Inline VAD loop — identical to the mic path.
+        vad_buffer.extend_from_slice(batch);
+        while vad_buffer.len() >= vad_chunk_size {
+            let chunk: Vec<f32> = vad_buffer.drain(..vad_chunk_size).collect();
+            let probability = vad
+                .predict(&chunk)
+                .map_err(|e| std::io::Error::other(format!("vad predict: {e}")))?;
+            total_vad_chunks += 1;
+
+            let was_speaking = gate.is_speaking();
+            if was_speaking {
+                session
+                    .feed(&chunk)
+                    .map_err(|e| std::io::Error::other(format!("voice feed: {e}")))?;
+            }
+            match gate.observe(probability) {
+                Some(VadEvent::SpeechStart) => {
+                    eprintln!("│ [vad] SpeechStart (probability={probability:.3})");
+                    session
+                        .feed(&chunk)
+                        .map_err(|e| std::io::Error::other(format!("voice feed: {e}")))?;
+                }
+                Some(VadEvent::SpeechEnd) => {
+                    eprintln!("│ [vad] SpeechEnd (probability={probability:.3}) — flushing");
+                    session
+                        .flush()
+                        .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+                }
+                None => {
+                    if trace && (was_speaking || probability > 0.1) {
+                        eprintln!(
+                            "│ [vad] probability={probability:.3} gate={}",
+                            if was_speaking { "Speaking" } else { "Idle" }
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // End of file — if no SpeechEnd has fired yet, force-flush so we
+    // get a Final from whatever Parakeet accumulated.
+    if gate.is_speaking() {
+        eprintln!("│ [vad] EOF while Speaking — force-flushing");
+        session
+            .flush()
+            .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+    } else {
+        // No utterance was ever detected. Flush anyway so we surface
+        // a Final (which will be empty) and the diagnostic hint fires.
+        session
+            .flush()
+            .map_err(|e| std::io::Error::other(format!("voice flush: {e}")))?;
+    }
+
+    // Final drain.
+    while let Ok(update) = stream_rx.try_recv() {
+        match update {
+            StreamUpdate::Partial { generation, value } => {
+                let text = value.text();
+                if text != last_partial_rendered {
+                    eprintln!("│ partial (gen={generation}): {text}");
+                    last_partial_rendered.clear();
+                    last_partial_rendered.push_str(text);
+                }
+            }
+            StreamUpdate::Final { generation, value } => {
+                let text = value.text().trim().to_owned();
+                if trace {
+                    eprintln!(
+                        "│ [trace] session summary: vad_chunks={total_vad_chunks} \
+                         max_rms={max_rms_seen:.4}"
+                    );
+                }
+                if text.is_empty() {
+                    eprintln!("│ FINAL (gen={generation}): <empty>");
+                    if max_rms_seen < vad_silence_floor_default() {
+                        eprintln!(
+                            "│ hint: peak audio RMS over the whole file was \
+                             {max_rms_seen:.4} (< silence_floor 0.003). The WAV \
+                             likely contains no audible speech."
+                        );
+                    }
+                    return Err(std::io::Error::other(
+                        "voice session produced an empty transcript from WAV input",
+                    ));
+                }
+                eprintln!("│ FINAL (gen={generation}): {text}");
+                eprintln!();
+                return Ok(text);
+            }
+            StreamUpdate::Cancelled { generation } => {
+                eprintln!("│ cancelled (gen={generation})");
+                return Err(std::io::Error::other("voice session cancelled"));
+            }
+        }
+    }
+
+    Err(std::io::Error::other(
+        "WAV input drained without producing a Final transcript",
+    ))
+}
+
+/// Read a WAV file into a 16 kHz mono f32 sample vector. Resamples
+/// linearly if the source rate differs; averages channels if the
+/// source is stereo. Mirrors the resampling logic in
+/// `sensorium-voice::AudioCapture`.
+#[cfg(feature = "parakeet")]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn read_wav_to_16k_mono(path: &std::path::Path) -> std::io::Result<Vec<f32>> {
+    let mut reader = hound::WavReader::open(path)
+        .map_err(|e| std::io::Error::other(format!("wav open {}: {e}", path.display())))?;
+    let spec = reader.spec();
+    let channels = spec.channels as usize;
+    if channels == 0 {
+        return Err(std::io::Error::other(format!(
+            "wav has 0 channels: {}",
+            path.display()
+        )));
+    }
+
+    // Decode every sample to f32 in [-1.0, 1.0]. Hound's f32 path
+    // returns the value directly; the integer paths return raw
+    // sample values that we normalize. The precision loss casting
+    // u64 → f32 is benign for typical bits_per_sample (8/16/24/32)
+    // because the values fit well within f32's mantissa.
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<Result<Vec<f32>, _>>()
+            .map_err(|e| std::io::Error::other(format!("wav decode f32: {e}")))?,
+        hound::SampleFormat::Int => {
+            let max = (1u64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .collect::<Result<Vec<i32>, _>>()
+                .map_err(|e| std::io::Error::other(format!("wav decode int: {e}")))?
+                .into_iter()
+                .map(|v| v as f32 / max)
+                .collect()
+        }
+    };
+
+    // Channel-mix to mono. Channel count is small (1, 2, 6 for surround);
+    // the precision loss casting usize → f32 is exact.
+    let chan_recip = 1.0_f32 / (channels as f32);
+    let mono: Vec<f32> = interleaved
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().copied().sum::<f32>() * chan_recip)
+        .collect();
+
+    // Resample to 16 kHz if the source is at a different rate.
+    let target_rate = 16_000_u32;
+    if spec.sample_rate == target_rate {
+        return Ok(mono);
+    }
+    let ratio = f64::from(target_rate) / f64::from(spec.sample_rate);
+    // ratio is always positive (target_rate > 0, sample_rate > 0),
+    // so the f64 → usize cast can't go negative; ceil() rounds up,
+    // so any precision loss is upward.
+    let estimated_len = (mono.len() as f64 * ratio).ceil() as usize;
+    let mut out = Vec::with_capacity(estimated_len);
+    let mut phase: f64 = 0.0;
+    for &s in &mono {
+        phase += ratio;
+        while phase >= 1.0 {
+            phase -= 1.0;
+            out.push(s);
+        }
+    }
+    Ok(out)
 }
 
 // --- Tempdir helper ---------------------------------------------------------

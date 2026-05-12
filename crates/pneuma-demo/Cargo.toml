@@ -36,20 +36,23 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
 
-# `parakeet` feature pulls in `ringbuf` so we can drain the audio
-# consumer half (`HeapCons<f32>`) returned by `AudioCapture::consumer`.
-# Behind a feature flag because the default Mock voice path needs
-# none of this.
+# `parakeet` feature pulls in:
+# - `ringbuf` to drain the audio consumer half (`HeapCons<f32>`)
+#   returned by `AudioCapture::consumer`.
+# - `hound` for reading WAV files when `MIL_VOICE_INPUT_FILE` is set
+#   (reproducible engine validation without a live mic).
+# Both are gated behind the feature flag — the default Mock voice
+# path needs none of them.
 ringbuf = { version = "0.5", optional = true }
+hound = { version = "3.5", optional = true }
 
 [features]
 default = []
 # Enables the real Parakeet TDT EOU streaming backend. Implies
 # `sensorium-voice/parakeet` (which itself implies `audio`) and
-# pulls in `ringbuf` so the demo can drain mic samples. Without
-# this feature, `MIL_VOICE_BACKEND=parakeet` returns a clear
-# runtime error.
-parakeet = ["sensorium-voice/parakeet", "dep:ringbuf"]
+# pulls in `ringbuf` + `hound`. Without this feature,
+# `MIL_VOICE_BACKEND=parakeet` returns a clear runtime error.
+parakeet = ["sensorium-voice/parakeet", "dep:ringbuf", "dep:hound"]
 
 [dev-dependencies]
 
